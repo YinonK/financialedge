@@ -4,7 +4,9 @@
  * Gemini provider. Server-side only — the key never reaches the browser.
  */
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// gemini-flash-latest is Google's rolling alias for the newest Flash model —
+// a safe default that won't 404 as older model IDs get retired for new accounts.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 function isConfigured() {
