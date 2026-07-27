@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FinancialEdge — Research</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main">
+    <h1>Research</h1>
+    <p class="subtitle">Five Lenses deep-dive on any ticker: valuation, technical structure, macro & geopolitics, flow & sentiment, risk & portfolio fit.</p>
+
+    <div class="card">
+      <div class="field-row">
+        <div class="field"><label>Ticker</label><input id="f-ticker" placeholder="NVDA" onkeydown="if(event.key==='Enter') runResearch()" /></div>
+      </div>
+      <button class="btn" onclick="runResearch()">Run Five Lenses</button>
+    </div>
+
+    <div id="results"></div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/research.js"></script>
+</body>
+</html>

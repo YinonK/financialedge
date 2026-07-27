@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FinancialEdge — Brain Chat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main">
+    <h1>Brain Chat</h1>
+    <p class="subtitle">Full context: your portfolio, recent signals, and everything The Brain remembers. It observes and advises — it never trades for you.</p>
+
+    <div class="card">
+      <div id="chatLog" class="chat-log"></div>
+      <div class="chat-input-row">
+        <textarea id="chatInput" placeholder="Ask The Brain anything…" onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+        <button class="btn" onclick="sendChat()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/brain.js"></script>
+</body>
+</html>

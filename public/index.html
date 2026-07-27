@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FinancialEdge — Home</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main">
+    <h1>Home</h1>
+    <p class="subtitle">Morning briefing, portfolio snapshot, live market indicators.</p>
+
+    <div id="confluenceAlert"></div>
+
+    <div class="card">
+      <h2>Brain Briefing</h2>
+      <div id="briefingContent" class="empty-state">Loading latest briefing…</div>
+    </div>
+
+    <div class="card">
+      <h2>Portfolio Snapshot</h2>
+      <div id="portfolioSnapshot" class="empty-state">Loading positions…</div>
+    </div>
+
+    <div class="card">
+      <h2>Market Indicators</h2>
+      <p class="subtitle" style="margin-bottom:14px;">
+        Blue border = your thresholds. Gold border = The Brain's macro thresholds. Click "?" on any tile for an explainer.
+      </p>
+      <div id="indicatorsGrid" class="card-row"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/home.js"></script>
+</body>
+</html>

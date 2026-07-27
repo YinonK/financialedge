@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FinancialEdge — Signals</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main">
+    <h1>Signals</h1>
+    <p class="subtitle">Paste anything — tweets, articles, chat messages. FinancialEdge detects tickers and flags convergence when multiple signals point at the same name.</p>
+
+    <div class="card">
+      <h2>Paste a signal</h2>
+      <div class="field"><textarea id="f-text" rows="5" placeholder="Paste text here…"></textarea></div>
+      <div class="field-row">
+        <div class="field"><label>Source (optional)</label><input id="f-source" placeholder="e.g. Twitter, a friend, an article" /></div>
+      </div>
+      <button class="btn" onclick="addSignal()">Save signal</button>
+    </div>
+
+    <div class="card">
+      <h2>Convergence</h2>
+      <div id="convergence" class="empty-state">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h2>Signal history</h2>
+      <div id="signalsList" class="empty-state">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/signals.js"></script>
+</body>
+</html>
