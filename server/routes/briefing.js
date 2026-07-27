@@ -8,6 +8,7 @@ const { getUsdIls } = require('../services/fx');
 const { getQuote } = require('../services/yahooFinance');
 const gemini = require('../services/gemini');
 const { sendBriefing } = require('../services/telegram');
+const { requireCronKey } = require('../lib/cronAuth');
 
 const router = express.Router();
 
@@ -15,17 +16,7 @@ const router = express.Router();
 // free tier sleeps when idle, so this endpoint IS the wake-up call — see README.
 // Protected by a shared secret so randoms on the internet can't spam it.
 router.post('/', async (req, res) => {
-  const expectedKey = process.env.BRIEFING_KEY;
-  const providedKey = req.get('X-Briefing-Key');
-
-  if (!expectedKey || expectedKey === 'change-me') {
-    return res.status(500).json({
-      error: 'BRIEFING_KEY is not set (or still the default) in .env — set a real secret before wiring up cron-job.org.',
-    });
-  }
-  if (providedKey !== expectedKey) {
-    return res.status(401).json({ error: 'invalid or missing X-Briefing-Key header' });
-  }
+  if (!requireCronKey(req, res)) return;
 
   try {
     const context = readContext();

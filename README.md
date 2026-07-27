@@ -75,8 +75,9 @@ cp .env.example .env
 Edit `.env`:
 
 - `GEMINI_API_KEY` — **get a free key at https://aistudio.google.com/apikey** and paste it in. Research and Brain Chat both check for this and return a clear, non-crashing message telling you to add it if it's missing — nothing is silently mocked.
-- `BRIEFING_KEY` — any random string; this is the shared secret cron-job.org sends to trigger the weekday briefing.
-- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — optional; if either is missing, briefing delivery just logs to the console instead of sending (see Telegram section below).
+- `CRON_KEY` — any random string; the shared secret cron-job.org sends to trigger the weekday briefing, the market-hours watchdog, and Telegram channel ingestion (one key, reused across all three).
+- `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — optional; if either is missing, alerts just log to the console instead of sending (see Telegram section below).
+- `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_SESSION` / `TELEGRAM_CHANNELS` — optional, only needed for autonomous channel ingestion (see that section below).
 
 ```bash
 npm start        # or: npm run dev  (auto-restarts on file changes)
@@ -84,32 +85,80 @@ npm start        # or: npm run dev  (auto-restarts on file changes)
 
 Open http://localhost:3000.
 
-## Deploying to Render.com (free tier)
+## Deploying — step by step
 
-`render.yaml` is included — Render will pick it up automatically if you create a new "Blueprint" service from this repo. It sets `runtime: node`, `plan: free`, `buildCommand: npm install`, `startCommand: npm start`, and declares the env vars above as secrets you fill in from the Render dashboard (they're marked `sync: false` so they're not committed).
+### 1. Push to GitHub
+
+Render deploys from a GitHub repo, so this needs to be on GitHub first.
+
+1. Go to https://github.com/new, create a new repository (private is fine, e.g. `financialedge`). Don't initialize it with a README/gitignore — this project already has both.
+2. Back in a terminal, in this project folder:
+   ```bash
+   git remote add origin https://github.com/<your-username>/financialedge.git
+   git branch -M main
+   git push -u origin main
+   ```
+3. If prompted for credentials, GitHub no longer accepts your account password for this — you'll need a Personal Access Token (GitHub will show a link to create one) or to have the GitHub CLI (`gh auth login`) set up.
+
+### 2. Deploy to Render.com (free tier)
+
+1. Create a free account at https://render.com (GitHub sign-in is the fastest path, and it's what lets Render see your repos).
+2. From the Render dashboard: **New +** → **Blueprint**.
+3. Connect your GitHub account if prompted, then select the `financialedge` repo you just pushed.
+4. Render reads `render.yaml` automatically and shows the `financialedge` web service it defines. Click **Apply**.
+5. Render will ask you to fill in the env vars marked `sync: false` in `render.yaml` — at minimum `GEMINI_API_KEY` and `CRON_KEY`; add the Telegram ones too if you have them ready (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and — once you've run the local Telegram login — `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_SESSION`, `TELEGRAM_CHANNELS`). You can always add the rest later from **Environment** in the service settings and it'll redeploy.
+6. Deploy. First build takes a few minutes; watch the logs in the Render dashboard for the same startup messages you'd see locally (`FinancialEdge server listening...`, and which integrations are/aren't configured).
+7. Once live, note the URL Render gives you (`https://financialedge-xxxx.onrender.com`) — that's what goes into the cron-job.org jobs below.
 
 **Free tier caveats:**
-- Render's free web services **sleep after 15 minutes of inactivity** and take ~30-60s to wake on the next request. This is why the cron job below exists — it's both the trigger for your morning briefing and the thing that wakes the service up.
+- Render's free web services **sleep after 15 minutes of inactivity** and take ~30-60s to wake on the next request. This is why the cron jobs below exist — they're both the trigger for scheduled work and the thing that wakes the service up.
 - Free tier does **not** support persistent disks, so `data/context.json` resets on every redeploy/restart. The browser's `localStorage` mirror is what actually survives — it re-syncs to the server on page load. If you want `data/context.json` to survive restarts, upgrade to a paid Render plan and add a `disk:` block to `render.yaml`.
 
-## Setting up the weekday morning briefing (cron-job.org)
+## Setting up the three scheduled jobs (cron-job.org)
 
-Because Render's free tier sleeps, an external cron trigger is required — a scheduler running *inside* a sleeping service can't wake itself up.
+Because Render's free tier sleeps, an external cron trigger is required for anything that needs to run on a schedule — a scheduler running *inside* a sleeping service can't wake itself up. All three jobs below use the same `CRON_KEY` secret in an `X-Cron-Key` header.
 
-1. Create a free account at https://cron-job.org
-2. New cron job → URL: `https://<your-render-app>.onrender.com/api/briefing`
-3. Method: `POST`
-4. Add a custom header: `X-Briefing-Key: <the same value you put in BRIEFING_KEY>`
-5. Schedule: weekdays (Mon–Fri) at 07:30 **Israel time** — cron-job.org lets you pick a timezone directly, or convert to UTC yourself (Israel is UTC+2 in winter / UTC+3 during DST)
-6. Save. The first run will wake the service and may take up to a minute — that's expected on free tier.
+Create a free account at https://cron-job.org, then set up three separate jobs:
 
-The endpoint checks `X-Briefing-Key` against `BRIEFING_KEY` in `.env` and returns 401 if it doesn't match, so don't publish that URL without the header.
+| Job | URL | Method | Schedule |
+|---|---|---|---|
+| Morning briefing | `https://<your-app>.onrender.com/api/briefing` | POST | weekdays 07:30 Israel time |
+| Portfolio watchdog | `https://<your-app>.onrender.com/api/watchdog` | POST | every 30-60 min, weekdays ~16:30-23:00 Israel time (covers 9:30am-4pm ET) |
+| Telegram channel ingestion | `https://<your-app>.onrender.com/api/signals/ingest` | POST | every 15-30 min, any time — alpha channels don't only post during market hours |
 
-## Telegram delivery
+For each: add a custom header `X-Cron-Key: <the value you put in CRON_KEY>`. cron-job.org lets you pick a timezone directly when scheduling, or convert to UTC yourself (Israel is UTC+2 in winter / UTC+3 during DST).
 
-`server/services/telegram.js` sends the briefing via `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` if both are set. If either is missing, it logs the briefing text to the console instead — this is a deliberate stub so the pipeline runs end-to-end without a bot configured. To wire up a real bot: message @BotFather on Telegram to create a bot and get a token, then message @userinfobot (or check `https://api.telegram.org/bot<token>/getUpdates` after messaging your bot once) to get your chat ID.
+The watchdog endpoint also double-checks server-side that it's actually US market hours before doing any work (`?force=true` skips that check, useful when testing manually). All three return 401 without a valid key, so don't publish these URLs without the header.
 
-**Out of scope for this phase** (explicitly deferred, per the original spec): Telegram auto-sync for *ingesting* signals, the position-vs-stop watchdog, daily opportunity hunts, a decision journal, and weekly reviews. This build is the 5 screens + Five Lenses working end-to-end on real data, plus outbound Telegram delivery only.
+## Telegram — outbound alerts + bidirectional chat
+
+`server/services/telegram.js` sends briefing/watchdog alerts via `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` if both are set; if either is missing, it logs to the console instead — the pipeline still runs end-to-end without a bot configured.
+
+Setup: message **@BotFather** on Telegram, send `/newbot`, follow the prompts — you get a token immediately, no approval wait. For the chat ID: message your new bot anything once, then open `https://api.telegram.org/bot<token>/getUpdates` in a browser and read `"chat":{"id": ...}` from the JSON, or just message **@userinfobot** to get your own numeric ID.
+
+Once both are set, the server automatically registers a webhook at startup (`services/telegram.js`'s `registerWebhook()`) pointing Telegram at `/api/telegram/webhook`, using Render's automatic `RENDER_EXTERNAL_URL`. This makes the bot **bidirectional**:
+- **Outbound**: the watchdog and briefing push alerts to your chat when something needs attention (stop approaching/breached, target hit, market confluence, a fresh signal convergence).
+- **Inbound**: reply to the bot (or just message it anything) and it feeds straight into The Brain's chat — same portfolio/signals/memory context as the Brain Chat screen, with the reply sent back to you in Telegram. The Brain can also proactively ask you a clarifying question this way, not just answer when you open the app.
+
+Optionally set `TELEGRAM_WEBHOOK_SECRET` (any random string) for an extra layer of validation on inbound requests. Only messages from the exact `TELEGRAM_CHAT_ID` are processed — anything else is logged and ignored.
+
+## Telegram — autonomous channel ingestion
+
+Beyond manual paste, The Brain can read alpha channels Yinon follows and feed detected tickers into the same convergence detector. This needs a different setup than the bot above, because **a plain Bot API token can only read chats it's explicitly added to** — it can't see posts in channels you merely follow. Reading those requires logging in as your own Telegram account via MTProto (the same protocol the official apps use), through the `telegram` (GramJS) package.
+
+Setup (one-time):
+1. Get `TELEGRAM_API_ID` + `TELEGRAM_API_HASH` for free at https://my.telegram.org (log in with your phone number → "API development tools" → create an app). Add both to `.env`.
+2. Run `npm run telegram:login` — it asks for your phone number, the login code Telegram texts you, and your 2FA password if you have one. At the end it prints a **session string**.
+3. Paste that session string into `.env` as `TELEGRAM_SESSION`. Treat it like a password — it's equivalent to being logged into Telegram as you. It's git-ignored, same as every other secret here.
+4. Set `TELEGRAM_CHANNELS` to a comma-separated list of channel handles to watch (no `@` needed), e.g. `TELEGRAM_CHANNELS=some_channel,another_channel`.
+
+Each ingestion run (triggered by cron-job.org, see table above) spins up a short-lived session, pulls messages newer than the last-seen checkpoint per channel, runs them through the same ticker-detection regex as manual paste, and stores them with `source: "telegram:@channelname"` — visible on the Signals screen exactly like anything pasted by hand. If a freshly-ingested ticker crosses the convergence threshold, you get a Telegram alert immediately rather than having to check the app.
+
+This is why polling (not a persistent live connection) — Render's free tier freezes the whole process when there's no inbound HTTP traffic, so a long-lived MTProto connection would just die with the dyno. Each cron-triggered run does its work in a few seconds and disconnects, the same "wake, work, sleep" shape as the briefing and watchdog.
+
+## Portfolio watchdog
+
+`server/services/watchdog.js` + `POST /api/watchdog` checks every open position's live price against its stop/target zone. It flags (and Telegram-alerts on) a breached stop, a stop that's getting close, or a target hit — plus a market-wide confluence alert if 2+ indicators are red. **It only observes and alerts; it never places, modifies, or cancels an order, and never touches a stop loss.** That decision is always Yinon's.
 
 ## Testing the AI calls
 
@@ -120,10 +169,15 @@ Everything works without `GEMINI_API_KEY` — Research shows raw Five Lenses dat
 ```
 server/
   index.js              Express app entry point
-  routes/               one file per API surface (market, portfolio, research, signals, brain, briefing, context)
+  routes/               one file per API surface (market, portfolio, research, signals, brain, briefing,
+                         watchdog, telegramWebhook, context)
   services/              Yahoo Finance, CNN Fear&Greed, FX, red-day counter, valuation, flow&sentiment,
-                          market indicators aggregator, risk/portfolio-fit math, Gemini client, Telegram
-  lib/                   context.json persistence, ticker-detection regex
+                          market indicators aggregator, risk/portfolio-fit math, Gemini client,
+                          Telegram (outbound + webhook registration), Telegram channel ingestion (GramJS),
+                          portfolio watchdog
+  lib/                   context.json persistence, ticker-detection regex, shared cron-key auth
+scripts/
+  telegram-login.js      one-time interactive MTProto login (npm run telegram:login)
 public/
   index.html, portfolio.html, research.html, signals.html, brain.html
   css/style.css

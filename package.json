@@ -9,11 +9,13 @@
   },
   "scripts": {
     "start": "node server/index.js",
-    "dev": "node --watch server/index.js"
+    "dev": "node --watch server/index.js",
+    "telegram:login": "node scripts/telegram-login.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "telegram": "^2.26.22"
   },
   "license": "UNLICENSED",
   "private": true

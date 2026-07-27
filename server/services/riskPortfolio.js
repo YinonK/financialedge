@@ -93,4 +93,31 @@ async function checkCorrelations(candidateSymbol, existingSymbols) {
   });
 }
 
-module.exports = { sizePosition, checkCorrelations, pearson, dailyReturns };
+/**
+ * Where a position sits between its stop and target, as a 0-100% "zone".
+ * Shared by the Portfolio screen (live rendering) and the Watchdog (alerting).
+ */
+function computeZone(position, currentPrice) {
+  const { stopPrice, targetPrice, side } = position;
+  if (stopPrice == null || targetPrice == null) return null;
+
+  const isLong = side !== 'short';
+  const low = isLong ? stopPrice : targetPrice;
+  const high = isLong ? targetPrice : stopPrice;
+  const range = high - low;
+  if (!range) return null;
+
+  const pct = ((currentPrice - low) / range) * 100;
+  const clamped = Math.max(-20, Math.min(120, pct));
+
+  return {
+    pctToTarget: +clamped.toFixed(1),
+    stopPrice,
+    targetPrice,
+    breachedStop: isLong ? currentPrice <= stopPrice : currentPrice >= stopPrice,
+    hitTarget: isLong ? currentPrice >= targetPrice : currentPrice <= targetPrice,
+    nearStop: isLong ? currentPrice > stopPrice && clamped <= 15 : currentPrice < stopPrice && clamped >= 85,
+  };
+}
+
+module.exports = { sizePosition, checkCorrelations, pearson, dailyReturns, computeZone };

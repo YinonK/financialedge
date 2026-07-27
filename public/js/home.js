@@ -73,6 +73,34 @@ async function loadIndicators() {
   }
 }
 
+async function loadOpsStatus() {
+  const el = document.getElementById('opsStatus');
+  try {
+    const [health, watchdogHistory] = await Promise.all([
+      Api.get('/api/health'),
+      Api.get('/api/watchdog/history'),
+    ]);
+    const lastWatchdog = watchdogHistory.length ? watchdogHistory[watchdogHistory.length - 1] : null;
+    const actionableFlags = lastWatchdog ? lastWatchdog.flags.filter((f) => f.severity !== 'info') : [];
+
+    el.innerHTML = `
+      <table>
+        <tbody>
+          <tr><td>Telegram outbound (alerts + chat)</td><td>${statusPill(health.telegramOutboundConfigured)}</td></tr>
+          <tr><td>Telegram channel ingestion</td><td>${statusPill(health.telegramIngestConfigured)}${health.telegramIngestChannels.length ? ` <span class="dim">(${health.telegramIngestChannels.join(', ')})</span>` : ''}</td></tr>
+          <tr><td>Portfolio watchdog — last run</td><td>${lastWatchdog ? `${new Date(lastWatchdog.ts).toLocaleString()} · ${actionableFlags.length ? actionableFlags.length + ' flag(s)' : 'all clear'}` : '<span class="dim">no runs yet — needs cron-job.org wired up</span>'}</td></tr>
+        </tbody>
+      </table>
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state">Couldn't load ops status: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function statusPill(configured) {
+  return configured ? '<span class="pos">● configured</span>' : '<span class="dim">○ not configured</span>';
+}
+
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
@@ -84,4 +112,5 @@ function escapeHtml(str) {
   loadBriefing();
   loadPortfolioSnapshot();
   loadIndicators();
+  loadOpsStatus();
 })();

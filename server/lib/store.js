@@ -41,6 +41,12 @@ const DEFAULT_CONTEXT = {
   briefing: {
     history: [], // { id, ts, summary }
   },
+  watchdog: {
+    history: [], // { id, ts, flags: [...], summary }
+  },
+  telegramIngest: {
+    lastMessageId: {}, // { [channelHandle]: messageId } — checkpoint so we never re-ingest the same message
+  },
 };
 
 function ensureFile() {

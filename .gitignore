@@ -3,3 +3,7 @@ node_modules/
 data/context.json
 *.log
 .DS_Store
+install_log.txt
+install_marker.txt
+*.session
+telegram_session.txt

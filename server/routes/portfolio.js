@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { readContext, writeContext } = require('../lib/store');
 const { getQuote } = require('../services/yahooFinance');
 const { getUsdIls } = require('../services/fx');
+const { computeZone } = require('../services/riskPortfolio');
 
 const router = express.Router();
 
@@ -122,28 +123,6 @@ router.delete('/:id', (req, res) => {
   writeContext(context);
   res.status(204).end();
 });
-
-function computeZone(position, currentPrice) {
-  const { stopPrice, targetPrice, side } = position;
-  if (stopPrice == null || targetPrice == null) return null;
-
-  const isLong = side !== 'short';
-  const low = isLong ? stopPrice : targetPrice;
-  const high = isLong ? targetPrice : stopPrice;
-  const range = high - low;
-  if (!range) return null;
-
-  const pct = ((currentPrice - low) / range) * 100;
-  const clamped = Math.max(-20, Math.min(120, pct));
-
-  return {
-    pctToTarget: +clamped.toFixed(1),
-    stopPrice,
-    targetPrice,
-    breachedStop: isLong ? currentPrice <= stopPrice : currentPrice >= stopPrice,
-    hitTarget: isLong ? currentPrice >= targetPrice : currentPrice <= targetPrice,
-  };
-}
 
 async function safeFx() {
   try {
