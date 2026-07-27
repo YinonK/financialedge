@@ -6,8 +6,9 @@ const { readContext, writeContext } = require('../lib/store');
 const { getIndicators } = require('../services/marketIndicators');
 const { getUsdIls } = require('../services/fx');
 const { getQuote } = require('../services/yahooFinance');
-const gemini = require('../services/gemini');
+const council = require('../services/council');
 const { sendBriefing } = require('../services/telegram');
+const { SYSTEM_PERSONA } = require('../services/brain');
 const { requireCronKey } = require('../lib/cronAuth');
 
 const router = express.Router();
@@ -37,7 +38,7 @@ router.post('/', async (req, res) => {
     const redFlags = indicators.indicators.filter((i) => i.status === 'red').map((i) => i.label);
 
     let narrative = null;
-    if (gemini.isConfigured()) {
+    if (council.anyConfigured()) {
       const prompt = `Write a short, sharp morning briefing (under 200 words) for Yinon.
 
 Market indicators red flags today: ${redFlags.length ? redFlags.join(', ') : 'none'}
@@ -46,16 +47,16 @@ Current positions:\n${positionsLines.join('\n') || 'none open'}
 
 Tone: sharp Wall Street friend, no disclaimers. Flag anything that needs his attention today. If nothing urgent, say so briefly and move on.`;
       try {
-        narrative = await gemini.generate(
-          'You are The Brain inside FinancialEdge, writing Yinon\'s morning briefing.',
-          [{ role: 'user', content: prompt }],
-          { json: false, maxOutputTokens: 500 }
-        );
+        narrative = await council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
+          json: false,
+          maxOutputTokens: 500,
+        });
       } catch (err) {
         narrative = `(Brain narrative unavailable: ${err.message})`;
       }
     } else {
-      narrative = 'GEMINI_API_KEY not set — showing raw data only. Add a key to get The Brain\'s narrative take.';
+      narrative =
+        'No AI provider configured — raw data only. Add GEMINI_API_KEY (free), ANTHROPIC_API_KEY, or OPENAI_API_KEY to get The Brain\'s narrative take.';
     }
 
     const summaryText = `FinancialEdge Morning Briefing — ${new Date().toISOString().slice(0, 10)}

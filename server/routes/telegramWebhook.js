@@ -49,9 +49,9 @@ router.post('/', async (req, res) => {
     };
     context.brain.messages.push(userMsg);
 
-    if (!require('../services/gemini').isConfigured()) {
+    if (!require('../services/council').anyConfigured()) {
       await sendMessage(
-        "GEMINI_API_KEY isn't set yet, so I can't think this through — add a free key from https://aistudio.google.com/apikey to .env as GEMINI_API_KEY and restart the server."
+        "No AI provider is set up yet, so I can't think this through — add GEMINI_API_KEY (free, https://aistudio.google.com/apikey), ANTHROPIC_API_KEY, or OPENAI_API_KEY to .env and restart the server."
       );
       writeContext(context);
       return;

@@ -4,7 +4,7 @@ const express = require('express');
 const crypto = require('crypto');
 const { readContext, writeContext } = require('../lib/store');
 const brain = require('../services/brain');
-const gemini = require('../services/gemini');
+const council = require('../services/council');
 
 const router = express.Router();
 
@@ -18,10 +18,10 @@ router.post('/chat', async (req, res) => {
   if (!body.message || !body.message.trim()) {
     return res.status(400).json({ error: 'message is required' });
   }
-  if (!gemini.isConfigured()) {
+  if (!council.anyConfigured()) {
     return res.status(400).json({
       error:
-        "GEMINI_API_KEY is not set, so The Brain can't respond yet. Get a free key at https://aistudio.google.com/apikey and add it to your .env as GEMINI_API_KEY, then restart the server.",
+        "No AI provider is configured, so The Brain can't respond yet. Add at least one key to .env — GEMINI_API_KEY (free, https://aistudio.google.com/apikey), ANTHROPIC_API_KEY, or OPENAI_API_KEY — then restart the server.",
       code: 'GEMINI_NOT_CONFIGURED',
     });
   }

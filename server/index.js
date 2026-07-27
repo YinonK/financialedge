@@ -14,7 +14,7 @@ const briefingRoutes = require('./routes/briefing');
 const watchdogRoutes = require('./routes/watchdog');
 const telegramWebhookRoutes = require('./routes/telegramWebhook');
 const contextRoutes = require('./routes/context');
-const gemini = require('./services/gemini');
+const council = require('./services/council');
 const telegram = require('./services/telegram');
 const telegramIngest = require('./services/telegramIngest');
 
@@ -35,9 +35,14 @@ app.use('/api/telegram/webhook', telegramWebhookRoutes);
 app.use('/api/context', contextRoutes);
 
 app.get('/api/health', (req, res) => {
+  const providers = council.configuredProviders();
+  const chair = council.chairProvider();
   res.json({
     ok: true,
-    geminiConfigured: gemini.isConfigured(),
+    geminiConfigured: providers.some((p) => p.id === 'gemini'), // kept for backward compat
+    aiProviders: providers.map((p) => p.label),
+    aiChair: chair ? chair.label : null,
+    councilNegotiation: providers.length >= 2,
     telegramOutboundConfigured: telegram.isConfigured(),
     telegramIngestConfigured: telegramIngest.isConfigured(),
     telegramIngestChannels: telegramIngest.getConfiguredChannels(),
@@ -51,11 +56,20 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 app.listen(PORT, () => {
   console.log(`FinancialEdge server listening on http://localhost:${PORT}`);
 
-  if (!gemini.isConfigured()) {
+  const providers = council.configuredProviders();
+  if (!providers.length) {
     console.log(
-      '[startup] GEMINI_API_KEY is not set. Research/Chat will return a clear "not configured" message until you add one.'
+      '[startup] No AI provider configured. Research/Chat will return a clear "not configured" message until you add one.'
     );
-    console.log('[startup] Get a free key at https://aistudio.google.com/apikey and add it to .env as GEMINI_API_KEY.');
+    console.log(
+      '[startup] Add at least one to .env: GEMINI_API_KEY (free, https://aistudio.google.com/apikey), ANTHROPIC_API_KEY, or OPENAI_API_KEY.'
+    );
+  } else {
+    console.log(
+      `[startup] AI Council: ${providers.map((p) => p.label).join(', ')} — ${
+        providers.length >= 2 ? 'negotiation ON' : 'single voice (add a second provider key to enable negotiation)'
+      }`
+    );
   }
 
   if (!telegram.isConfigured()) {

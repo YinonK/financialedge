@@ -25,9 +25,21 @@ The Gemini API key is also server-side only, read from `.env` via `process.env.G
 4. **Signals** — paste anything (tweets, articles, chat messages); tickers are auto-detected and a convergence detector flags names getting 2+ mentions in the last 14 days.
 5. **Brain Chat** — full context (portfolio, signals, market state, accumulated memory) in every message.
 
+## The AI Council — multi-model negotiation
+
+The Brain can run on one AI provider or several at once. With two or three keys configured (any subset of Gemini / Claude / OpenAI), significant decisions go through **the Council**:
+
+1. **Round 1** — each model independently produces its own Five Lenses take from the same data.
+2. **Round 2** — each model sees the others' takes (anonymized as Analyst A/B/C to avoid brand deference) and must rebut or concede, then submit a revised take.
+3. **Consensus** — the chair model (`AI_CHAIR` in `.env`, defaults to the first configured) merges the revised takes into one verdict that is *required* to surface real disagreements rather than paper over them. A split council pulls conviction down and usually lands on WATCH — a split is signal, not noise.
+
+The full negotiation convenes on research calls. Lighter one-round "quick takes" from all models get merged into Telegram alerts at significant crossroads: watchdog flags (stop breached/approaching, target hit, market confluence) and fresh signal convergences. Chat and the morning briefing stay single-voice (the chair) to keep them fast.
+
+With one key, everything collapses gracefully to a single-model Brain — no negotiation, no extra cost. Gemini's key is free; Anthropic and OpenAI are pay-per-token (a few dollars a month at this usage). Provider clients live in `server/services/providers/`, orchestration in `server/services/council.js` — adding a fourth provider is one new file.
+
 ## The Five Lenses
 
-Every research call runs all five and asks Gemini to synthesize them into a Bull case, Bear case, "what kills this trade," a conviction score (1-10), and a verdict (BUY / WATCH / AVOID):
+Every research call runs all five and asks the Council to synthesize them into a Bull case, Bear case, "what kills this trade," a conviction score (1-10), and a verdict (BUY / WATCH / AVOID):
 
 1. **Valuation** — P/E, PEG, EV/EBITDA, FCF yield (Yahoo Finance `quoteSummary`)
 2. **Technical structure** — 50/200 DMA, Fibonacci retracements/extensions, RSI, MACD (+ divergence heuristic), volume trend (Yahoo Finance chart API, computed server-side)
@@ -74,7 +86,8 @@ cp .env.example .env
 
 Edit `.env`:
 
-- `GEMINI_API_KEY` — **get a free key at https://aistudio.google.com/apikey** and paste it in. Research and Brain Chat both check for this and return a clear, non-crashing message telling you to add it if it's missing — nothing is silently mocked.
+- `GEMINI_API_KEY` — **get a free key at https://aistudio.google.com/apikey** and paste it in. Research and Brain Chat return a clear, non-crashing message if no AI key is present — nothing is silently mocked.
+- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` — optional, paid per-token (console.anthropic.com / platform.openai.com). Adding a second/third key turns on Council negotiation (see above). `AI_CHAIR` picks which model is the single voice for chat/briefing/merging.
 - `CRON_KEY` — any random string; the shared secret cron-job.org sends to trigger the weekday briefing, the market-hours watchdog, and Telegram channel ingestion (one key, reused across all three).
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` — optional; if either is missing, alerts just log to the console instead of sending (see Telegram section below).
 - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_SESSION` / `TELEGRAM_CHANNELS` — optional, only needed for autonomous channel ingestion (see that section below).

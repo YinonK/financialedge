@@ -7,7 +7,7 @@ async function runResearch() {
     return;
   }
   const el = document.getElementById('results');
-  el.innerHTML = `<div class="card"><div class="empty-state">Running the Five Lenses on ${ticker}… this hits Yahoo Finance, then Gemini — give it a few seconds.</div></div>`;
+  el.innerHTML = `<div class="card"><div class="empty-state">Running the Five Lenses on ${ticker}… data feeds first, then the AI Council deliberates — can take up to a minute when multiple models negotiate.</div></div>`;
 
   try {
     const data = await Api.get(`/api/research/${ticker}`);
@@ -34,9 +34,16 @@ function renderResult(data) {
         <h3 style="color:var(--accent-red);">What kills this trade</h3>
         <p>${escapeHtml(b.whatKillsThisTrade || '')}</p>
       </div>
+      ${b.disagreements ? `
+      <div class="lens-block" style="margin-top:14px;border-color:var(--accent-purple);">
+        <h3 style="color:var(--accent-purple);">Council disagreements ${b.councilAlignment ? `<span class="dim" style="font-size:11px;">(${escapeHtml(b.councilAlignment)})</span>` : ''}</h3>
+        <p>${escapeHtml(b.disagreements)}</p>
+      </div>` : ''}
     </div>
   `
     : `<div class="card"><div class="empty-state">${escapeHtml(data.brainError || 'The Brain did not return an analysis.')}</div></div>`;
+
+  const councilHtml = renderCouncil(data.council);
 
   const lensesData = data.lenses;
   const fiveLensesReads = b && b.fiveLenses ? b.fiveLenses : {};
@@ -54,7 +61,38 @@ function renderResult(data) {
     </div>
   `;
 
-  return `<h2 style="margin-top:20px;">${data.ticker} <span class="dim" style="font-size:12px;font-weight:400;">as of ${new Date(data.generatedAt).toLocaleString()}</span></h2>${verdictHtml}${rawLensesHtml}`;
+  return `<h2 style="margin-top:20px;">${data.ticker} <span class="dim" style="font-size:12px;font-weight:400;">as of ${new Date(data.generatedAt).toLocaleString()}</span></h2>${verdictHtml}${councilHtml}${rawLensesHtml}`;
+}
+
+function renderCouncil(c) {
+  if (!c || !c.round1 || !c.round1.length) return '';
+  const finalTakes = c.round2 || c.round1;
+  const votes = finalTakes
+    .map((r) => {
+      const take = r.take || {};
+      return `
+      <div class="lens-block">
+        <h3>${escapeHtml(r.label)}</h3>
+        <p>
+          <span class="badge ${take.verdict ? take.verdict.toLowerCase() : ''}">${escapeHtml(take.verdict || '—')}</span>
+          <span class="dim" style="margin-left:8px;">conviction ${take.conviction != null ? take.conviction + '/10' : '—'}</span>
+        </p>
+        ${take.rebuttal ? `<p style="margin-top:8px;font-size:12px;"><strong>Rebuttal:</strong> ${escapeHtml(take.rebuttal)}</p>` : ''}
+        <details style="margin-top:8px;">
+          <summary class="dim" style="cursor:pointer;font-size:11px;">full take</summary>
+          <pre style="font-size:11px;white-space:pre-wrap;overflow-x:auto;">${escapeHtml(JSON.stringify(take, null, 2))}</pre>
+        </details>
+      </div>`;
+    })
+    .join('');
+
+  return `
+    <div class="card">
+      <h2>The Council ${c.negotiated ? '<span class="dim" style="font-size:12px;font-weight:400;">— negotiated: independent takes, then rebuttals, then consensus</span>' : '<span class="dim" style="font-size:12px;font-weight:400;">— single voice (add a second AI key for negotiation)</span>'}</h2>
+      <div class="lens-grid">${votes}</div>
+      ${c.errors && c.errors.length ? `<div class="dim" style="margin-top:10px;font-size:11px;">Notes: ${c.errors.map(escapeHtml).join(' · ')}</div>` : ''}
+    </div>
+  `;
 }
 
 function lensBlock(title, read, rawData, isMacro) {

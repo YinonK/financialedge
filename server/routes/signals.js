@@ -7,6 +7,8 @@ const { detectTickers } = require('../lib/tickerDetect');
 const { ingestNewSignals } = require('../services/telegramIngest');
 const { sendMessage } = require('../services/telegram');
 const { requireCronKey } = require('../lib/cronAuth');
+const council = require('../services/council');
+const { SYSTEM_PERSONA } = require('../services/brain');
 
 const router = express.Router();
 
@@ -110,9 +112,26 @@ router.post('/ingest', async (req, res) => {
       const freshTickers = new Set(result.newItems.flatMap((i) => i.tickers));
       const convergences = computeConvergence(context.signals.items).filter((c) => freshTickers.has(c.ticker));
       if (convergences.length) {
+        // A new convergence is a significant signal — get the Council's
+        // quick multi-model read before alerting. Never blocks the alert.
+        let councilRead = null;
+        try {
+          const relatedSignals = context.signals.items
+            .filter((s) => s.tickers.some((t) => convergences.some((c) => c.ticker === t)))
+            .slice(-10);
+          councilRead = await council.quickTake(
+            SYSTEM_PERSONA,
+            `New signal convergence just detected in Yinon's followed channels:\n${convergences
+              .map((c) => `- ${c.ticker}: ${c.count} mentions in ${CONVERGENCE_WINDOW_DAYS}d${c.strongConvergence ? ' (strong)' : ''}`)
+              .join('\n')}\n\nThe underlying signals (raw pastes/channel posts):\n${JSON.stringify(relatedSignals, null, 2)}`
+          );
+        } catch (err) {
+          console.error('[signals:ingest] council quickTake failed:', err.message);
+        }
+
         const text = `FinancialEdge — new convergence detected:\n\n${convergences
           .map((c) => `• ${c.ticker}: ${c.count} mentions in ${CONVERGENCE_WINDOW_DAYS}d${c.strongConvergence ? ' (strong)' : ''}`)
-          .join('\n')}`;
+          .join('\n')}${councilRead ? `\n\nCouncil read: ${councilRead}` : ''}`;
         await sendMessage(text).catch((err) => console.error('[signals:ingest] alert send failed:', err.message));
       }
     }

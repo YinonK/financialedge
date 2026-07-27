@@ -7,6 +7,8 @@ const { checkPositions, isUsMarketHours } = require('../services/watchdog');
 const { getIndicators } = require('../services/marketIndicators');
 const { sendMessage } = require('../services/telegram');
 const { requireCronKey } = require('../lib/cronAuth');
+const council = require('../services/council');
+const { SYSTEM_PERSONA } = require('../services/brain');
 
 const router = express.Router();
 
@@ -46,10 +48,25 @@ router.post('/', async (req, res) => {
     const actionable = flags.filter((f) => f.severity === 'critical' || f.severity === 'warning' || f.severity === 'good');
 
     let delivery = null;
+    let councilRead = null;
     if (actionable.length) {
+      // A watchdog flag is a significant crossroads — convene the Council
+      // for a quick multi-model read before alerting. Failures never block
+      // the alert itself.
+      try {
+        councilRead = await council.quickTake(
+          SYSTEM_PERSONA,
+          `Watchdog crossroads for Yinon's book. Flags just raised:\n${actionable
+            .map((f) => `- [${f.severity}] ${f.message}`)
+            .join('\n')}\n\nOpen positions: ${JSON.stringify(positions)}`
+        );
+      } catch (err) {
+        console.error('[watchdog] council quickTake failed:', err.message);
+      }
+
       const text = `FinancialEdge Watchdog — ${new Date().toISOString().slice(0, 16).replace('T', ' ')}\n\n${actionable
         .map((f) => `• ${f.message}`)
-        .join('\n')}`;
+        .join('\n')}${councilRead ? `\n\nCouncil read: ${councilRead}` : ''}`;
       delivery = await sendMessage(text);
     }
 
@@ -57,6 +74,7 @@ router.post('/', async (req, res) => {
       id: crypto.randomUUID(),
       ts: new Date().toISOString(),
       flags,
+      councilRead,
       delivery,
     };
     context.watchdog.history.push(entry);

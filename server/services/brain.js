@@ -16,7 +16,7 @@
  *  5. Risk & portfolio fit— <=2% capital risk sized off stop distance, correlation
  */
 
-const gemini = require('./gemini');
+const council = require('./council');
 const { getTechnicals } = require('./yahooFinance');
 const { getValuation } = require('./valuation');
 const { getFlowSentiment } = require('./flowSentiment');
@@ -85,17 +85,30 @@ Yinon's current portfolio tickers (for correlation/concentration context): ${por
 Produce your Five Lenses take on ${symbol} as JSON matching this schema exactly:
 ${schema}`;
 
+  // The Council: every configured AI provider analyzes independently, then
+  // they see each other's takes and rebut/revise, then the chair merges into
+  // a consensus that must surface real disagreements. One provider = plain
+  // single-model take, zero = clear "not configured" message.
   let brainAnalysis = null;
+  let councilResult = null;
   let brainError = null;
-  if (gemini.isConfigured()) {
+  if (council.anyConfigured()) {
     try {
-      const text = await gemini.generate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], { json: true });
-      brainAnalysis = JSON.parse(stripFences(text));
+      const result = await council.deliberate(SYSTEM_PERSONA, prompt, schema);
+      brainAnalysis = result.consensus;
+      councilResult = {
+        negotiated: result.negotiated,
+        providersUsed: result.providersUsed,
+        round1: result.round1,
+        round2: result.round2,
+        errors: result.errors,
+      };
     } catch (err) {
       brainError = err.message;
     }
   } else {
-    brainError = 'GEMINI_API_KEY not configured — showing raw Five Lenses data only. Add a free key from https://aistudio.google.com/apikey to your .env as GEMINI_API_KEY to get The Brain\'s narrative take.';
+    brainError =
+      'No AI provider configured — showing raw Five Lenses data only. Add at least one key to .env: GEMINI_API_KEY (free, https://aistudio.google.com/apikey), ANTHROPIC_API_KEY, or OPENAI_API_KEY.';
   }
 
   return {
@@ -103,6 +116,7 @@ ${schema}`;
     generatedAt: new Date().toISOString(),
     lenses,
     brainAnalysis,
+    council: councilResult,
     brainError,
   };
 }
@@ -133,12 +147,11 @@ Remember: you can discuss, analyze, and recommend freely, including specific ent
   }));
   history.push({ role: 'user', content: userMessage });
 
-  const text = await gemini.generate(`${SYSTEM_PERSONA}\n\n${contextPreamble}`, history, { json: false });
+  // Chat stays single-voice (the chair) — a three-way argument on every
+  // casual message would be slow and noisy. The full Council convenes on
+  // research calls and significant crossroads.
+  const text = await council.chairGenerate(`${SYSTEM_PERSONA}\n\n${contextPreamble}`, history, { json: false });
   return text;
-}
-
-function stripFences(text) {
-  return text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
 }
 
 async function safe(fn) {
