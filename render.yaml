@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: financialedge
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: BRIEFING_KEY
+        sync: false
+      - key: PORT
+        value: 3000
+# NOTE: Render's free tier does not support persistent disks. data/context.json
+# will reset on every redeploy/restart on the free plan — the browser's
+# localStorage is the durable copy and re-syncs to the server on load.
+# Upgrade to a paid plan + add a `disk:` block here if you want server-side
+# persistence to survive restarts.
