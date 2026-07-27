@@ -30,7 +30,9 @@ async function generate(systemInstruction, history, opts = {}) {
     })),
     generationConfig: {
       temperature: opts.temperature != null ? opts.temperature : 0.6,
-      maxOutputTokens: opts.maxOutputTokens || 2048,
+      // Newer Gemini models "think" before answering and the thinking spends
+      // from this same budget — too small a cap truncates the actual answer.
+      maxOutputTokens: opts.maxOutputTokens || 16384,
       responseMimeType: opts.json ? 'application/json' : 'text/plain',
     },
   };
@@ -49,8 +51,14 @@ async function generate(systemInstruction, history, opts = {}) {
   const json = JSON.parse(text);
   const candidate = json.candidates && json.candidates[0];
   const parts = candidate && candidate.content && candidate.content.parts;
-  const out = parts && parts.map((p) => p.text || '').join('');
-  if (!out) throw new Error('Gemini returned no usable content (possibly blocked by safety filters).');
+  // Skip "thought" parts thinking models sometimes include alongside the answer.
+  const out = parts && parts.filter((p) => !p.thought).map((p) => p.text || '').join('');
+  if (!out) {
+    const reason = candidate && candidate.finishReason;
+    throw new Error(
+      `Gemini returned no usable content${reason ? ` (finishReason: ${reason})` : ''} — possibly blocked or the output budget was exhausted by thinking.`
+    );
+  }
   return out;
 }
 

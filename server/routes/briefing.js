@@ -49,7 +49,7 @@ Tone: sharp Wall Street friend, no disclaimers. Flag anything that needs his att
       try {
         narrative = await council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
           json: false,
-          maxOutputTokens: 500,
+          maxOutputTokens: 2048, // thinking models spend reasoning tokens from this budget
         });
       } catch (err) {
         narrative = `(Brain narrative unavailable: ${err.message})`;

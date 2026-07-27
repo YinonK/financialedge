@@ -70,9 +70,21 @@ function stripFences(text) {
 }
 
 function tryParse(text) {
+  const cleaned = stripFences(text);
   try {
-    return JSON.parse(stripFences(text));
+    return JSON.parse(cleaned);
   } catch (err) {
+    // Models sometimes wrap JSON in prose or thinking preamble — extract the
+    // outermost {...} block and try that before giving up.
+    const first = cleaned.indexOf('{');
+    const last = cleaned.lastIndexOf('}');
+    if (first !== -1 && last > first) {
+      try {
+        return JSON.parse(cleaned.slice(first, last + 1));
+      } catch (err2) {
+        return null;
+      }
+    }
     return null;
   }
 }
@@ -230,7 +242,7 @@ async function quickTake(systemPersona, situation) {
 Give your read in 2-3 sharp sentences: what this means, and what Yinon should be looking at (never an instruction to trade — he decides). No preamble.`;
 
   const results = await Promise.allSettled(
-    providers.map((p) => p.generate(systemPersona, [{ role: 'user', content: prompt }], { json: false, maxOutputTokens: 300 }))
+    providers.map((p) => p.generate(systemPersona, [{ role: 'user', content: prompt }], { json: false, maxOutputTokens: 2048 }))
   );
 
   const takes = [];
@@ -253,7 +265,7 @@ Give your read in 2-3 sharp sentences: what this means, and what Yinon should be
             .join('\n\n')}\n\nMerge into ONE read of max 3 sentences. If they disagree, lead with the disagreement — that's the headline.`,
         },
       ],
-      { json: false, maxOutputTokens: 300 }
+      { json: false, maxOutputTokens: 2048 }
     );
     return merged.trim();
   } catch (err) {
