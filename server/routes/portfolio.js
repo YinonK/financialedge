@@ -6,6 +6,7 @@ const { readContext, writeContext } = require('../lib/store');
 const { getQuote } = require('../services/yahooFinance');
 const { getUsdIls } = require('../services/fx');
 const { computeZone } = require('../services/riskPortfolio');
+const journalService = require('../services/journal');
 
 const router = express.Router();
 
@@ -88,8 +89,27 @@ router.post('/', (req, res) => {
     notes: body.notes || '',
   };
   context.portfolio.positions.push(position);
+
+  // Auto-log the decision so the journal reflects reality without depending
+  // on Yinon remembering to write it down. `council` can be passed in from
+  // the Research screen to freeze the Council's read at decision time.
+  const entry = journalService.createEntry({
+    ticker: position.ticker,
+    action: 'BUY',
+    shares: position.shares,
+    price: position.entryPrice,
+    stopPrice: position.stopPrice,
+    targetPrice: position.targetPrice,
+    thesis: position.thesis,
+    conviction: body.conviction != null ? body.conviction : null,
+    council: body.council || null,
+    positionId: position.id,
+    source: 'portfolio_open',
+  });
+  context.journal.entries.push(entry);
+
   writeContext(context);
-  res.status(201).json(position);
+  res.status(201).json({ ...position, journalEntryId: entry.id });
 });
 
 router.put('/:id', (req, res) => {
@@ -113,13 +133,37 @@ router.put('/:id', (req, res) => {
   res.json(context.portfolio.positions[idx]);
 });
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   const context = readContext();
-  const before = context.portfolio.positions.length;
-  context.portfolio.positions = context.portfolio.positions.filter((p) => p.id !== req.params.id);
-  if (context.portfolio.positions.length === before) {
+  const position = context.portfolio.positions.find((p) => p.id === req.params.id);
+  if (!position) {
     return res.status(404).json({ error: 'position not found' });
   }
+  context.portfolio.positions = context.portfolio.positions.filter((p) => p.id !== req.params.id);
+
+  // Closing a position reconciles its journal entry. Exit price comes from
+  // the caller if supplied, otherwise the last live quote — never invented.
+  const openEntry = context.journal.entries.find(
+    (e) => e.positionId === position.id && e.status === 'open'
+  );
+  if (openEntry) {
+    let exitPrice = req.query.exitPrice != null ? Number(req.query.exitPrice) : null;
+    if (exitPrice == null) {
+      try {
+        const q = await getQuote(position.ticker);
+        exitPrice = q.price;
+      } catch (err) {
+        exitPrice = null;
+      }
+    }
+    const idx = context.journal.entries.findIndex((e) => e.id === openEntry.id);
+    context.journal.entries[idx] = journalService.closeEntry(openEntry, {
+      exitPrice,
+      shares: position.shares,
+      whatHappened: req.query.note || '',
+    });
+  }
+
   writeContext(context);
   res.status(204).end();
 });

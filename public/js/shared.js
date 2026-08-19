@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { href: '/portfolio.html', label: 'Portfolio' },
   { href: '/research.html', label: 'Research' },
   { href: '/signals.html', label: 'Signals' },
+  { href: '/journal.html', label: 'Journal' },
   { href: '/brain.html', label: 'Brain Chat' },
 ];
 

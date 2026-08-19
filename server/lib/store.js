@@ -44,6 +44,19 @@ const DEFAULT_CONTEXT = {
   watchdog: {
     history: [], // { id, ts, flags: [...], summary }
   },
+  journal: {
+    // Every decision Yinon makes, with the Council's read at the time, so the
+    // Brain can be scored against its own track record later.
+    // { id, ts, ticker, action, shares, price, thesis, conviction, council,
+    //   positionId, status: 'open'|'closed', outcome: {...} }
+    entries: [],
+  },
+  opportunities: {
+    history: [], // { id, ts, candidates: [...], councilRead, delivery }
+  },
+  review: {
+    history: [], // { id, ts, weekOf, summary, delivery }
+  },
   telegramIngest: {
     lastMessageId: {}, // { [channelHandle]: messageId } — checkpoint so we never re-ingest the same message
   },

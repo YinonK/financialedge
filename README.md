@@ -23,7 +23,8 @@ The Gemini API key is also server-side only, read from `.env` via `process.env.G
 2. **Portfolio** — CRUD for up to 5 positions, live P&L in USD + ILS, a stop/target zone bar per position.
 3. **Research** — Five Lenses deep-dive on any ticker, returned as structured JSON and rendered in the UI.
 4. **Signals** — paste anything (tweets, articles, chat messages); tickers are auto-detected and a convergence detector flags names getting 2+ mentions in the last 14 days.
-5. **Brain Chat** — full context (portfolio, signals, market state, accumulated memory) in every message.
+5. **Journal** — decision journal with outcome tracking and a calibration scorecard (see below).
+6. **Brain Chat** — full context (portfolio, signals, market state, accumulated memory) in every message.
 
 ## The AI Council — multi-model negotiation
 
@@ -137,7 +138,9 @@ Create a free account at https://cron-job.org, then set up three separate jobs:
 |---|---|---|---|
 | Morning briefing | `https://<your-app>.onrender.com/api/briefing` | POST | weekdays 07:30 Israel time |
 | Portfolio watchdog | `https://<your-app>.onrender.com/api/watchdog` | POST | every 30-60 min, weekdays ~16:30-23:00 Israel time (covers 9:30am-4pm ET) |
-| Telegram channel ingestion | `https://<your-app>.onrender.com/api/signals/ingest` | POST | every 15-30 min, any time — alpha channels don't only post during market hours |
+| Telegram channel ingestion | `https://<your-app>.onrender.com/api/signals/ingest` | POST | every 15 min — also keeps the free-tier dyno awake, so nothing else hits a cold start |
+| Daily opportunity hunt | `https://<your-app>.onrender.com/api/opportunities` | POST | weekdays, once daily ~16:00 Israel time (before the US open) |
+| Saturday weekly review | `https://<your-app>.onrender.com/api/review/weekly` | POST | Saturdays ~10:00 Israel time |
 
 For each: add a custom header `X-Cron-Key: <the value you put in CRON_KEY>`. cron-job.org lets you pick a timezone directly when scheduling, or convert to UTC yourself (Israel is UTC+2 in winter / UTC+3 during DST).
 
@@ -168,6 +171,28 @@ Setup (one-time):
 Each ingestion run (triggered by cron-job.org, see table above) spins up a short-lived session, pulls messages newer than the last-seen checkpoint per channel, runs them through the same ticker-detection regex as manual paste, and stores them with `source: "telegram:@channelname"` — visible on the Signals screen exactly like anything pasted by hand. If a freshly-ingested ticker crosses the convergence threshold, you get a Telegram alert immediately rather than having to check the app.
 
 This is why polling (not a persistent live connection) — Render's free tier freezes the whole process when there's no inbound HTTP traffic, so a long-lived MTProto connection would just die with the dyno. Each cron-triggered run does its work in a few seconds and disconnects, the same "wake, work, sleep" shape as the briefing and watchdog.
+
+## Decision Journal — how the Brain gets graded
+
+`/journal.html` logs every decision with the Council's read **frozen at the time the call was made** (verdict, conviction, whether the Council was unanimous or split), then reconciles it against what actually happened when the position closes. Opening a position on the Portfolio screen auto-logs an entry; closing one auto-reconciles it using the live quote (or a price you pass), so the record stays complete without relying on discipline.
+
+The scorecard slices the track record by the things that would actually change behaviour:
+
+- **By conviction** — does high confidence actually predict better outcomes, or is it noise?
+- **By Council alignment** — is a split Council a genuine warning sign? This is the single most useful thing this system can learn about itself.
+- **By Council verdict** — do BUYs outperform WATCHes?
+
+Plus hit rate, total P&L, and **expectancy per decision** — the number that actually matters for a concentrated, high-risk book. "Ask the Brain to grade itself" feeds the whole record back through the Council for a blunt self-assessment of where it's well calibrated and where it's fooling itself.
+
+## Daily Opportunity Hunt
+
+`POST /api/opportunities` (cron-triggered). The Brain goes looking instead of only reacting. Candidates come from tickers appearing in your own channel signal flow that you don't already hold, plus Yahoo's trending list (best-effort — if that endpoint fails the hunt continues on signal flow alone rather than dying). Each candidate gets a real server-computed technical screen (DMA structure, golden/death cross, RSI, MACD, volume trend, divergences), gets ranked, and the top 3 go to the full Council for a brainstorm. Result lands in Telegram.
+
+Deliberately bounded — max 8 screened, top 3 to the Council. Render's free tier plus cron-job.org's 30s timeout means an unbounded scan would just die; a reliable look at 3 names beats a timeout on 30.
+
+## Saturday Weekly Review
+
+`POST /api/review/weekly` (cron-triggered, Saturdays). The week in one message: realized P&L (USD + ILS), unrealized P&L on open positions, decisions opened and closed, how the closed calls actually played out versus what the Council said at the time, the running track record, and the most-mentioned tickers across your channels. The Brain closes with what the record says about its own calibration, what to watch into next week, and one thing worth doing differently. History is kept and served at `GET /api/review/history`.
 
 ## Portfolio watchdog
 

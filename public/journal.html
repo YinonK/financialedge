@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FinancialEdge — Decision Journal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main">
+    <h1>Decision Journal</h1>
+    <p class="subtitle">Every call, the Council's read at the time, and what actually happened. This is how the Brain gets graded.</p>
+
+    <div class="card">
+      <h2>Track Record</h2>
+      <div id="scorecard" class="empty-state">Loading…</div>
+      <div style="margin-top:14px;">
+        <button class="btn" onclick="runReflection()">Ask the Brain to grade itself</button>
+      </div>
+      <div id="reflection"></div>
+    </div>
+
+    <div class="card">
+      <h2>Log a Decision</h2>
+      <div class="field-row">
+        <div class="field"><label>Ticker</label><input id="f-ticker" placeholder="NVDA" /></div>
+        <div class="field"><label>Action</label>
+          <select id="f-action">
+            <option>BUY</option><option>ADD</option><option>TRIM</option>
+            <option>EXIT</option><option>PASS</option><option>WATCH</option>
+          </select>
+        </div>
+        <div class="field"><label>Shares</label><input id="f-shares" type="number" placeholder="100" /></div>
+        <div class="field"><label>Price</label><input id="f-price" type="number" step="0.01" placeholder="120.50" /></div>
+        <div class="field"><label>Conviction 1-10</label><input id="f-conviction" type="number" min="1" max="10" placeholder="7" /></div>
+      </div>
+      <div class="field"><label>Thesis — why, in your own words</label><textarea id="f-thesis" rows="2"></textarea></div>
+      <button class="btn" onclick="addEntry()">Log decision</button>
+      <span class="dim" style="margin-left:12px;font-size:12px;">Opening a position on the Portfolio screen logs here automatically.</span>
+    </div>
+
+    <div class="card">
+      <h2>Decisions</h2>
+      <div id="entries" class="empty-state">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/journal.js"></script>
+</body>
+</html>
