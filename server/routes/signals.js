@@ -139,6 +139,7 @@ router.post('/ingest', async (req, res) => {
     res.json({
       ingested: result.newItems.length,
       configured: true,
+      perChannel: result.perChannel || {},
       errors: result.errors || [],
     });
   } catch (err) {

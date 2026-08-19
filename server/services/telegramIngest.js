@@ -93,22 +93,46 @@ async function ingestNewSignals(lastMessageIdByChannel) {
   const newItems = [];
   const updatedCheckpoints = { ...lastMessageIdByChannel };
   const errors = [];
+  const perChannel = {}; // diagnostics: what each channel actually returned
 
   try {
     await client.connect();
 
+    const authorized = await client.isUserAuthorized();
+    if (!authorized) {
+      return {
+        configured: true,
+        newItems: [],
+        updatedCheckpoints: lastMessageIdByChannel,
+        perChannel,
+        errors: [
+          'Telegram session is not authorized — the TELEGRAM_SESSION string is missing, expired, or was revoked. Re-run `npm run telegram:login` and update TELEGRAM_SESSION.',
+        ],
+      };
+    }
+
     for (const channel of channels) {
       try {
         const sinceId = lastMessageIdByChannel[channel] || 0;
-        // getMessages with minId returns messages newer than that ID, oldest-first-ish;
-        // limit keeps a single run bounded even after a long sleep.
-        const messages = await client.getMessages(channel, { limit: 50, minId: sinceId });
+
+        // Resolve the channel to a real entity first. On a fresh session the
+        // entity cache is empty, and passing a bare username string can come
+        // back empty instead of throwing — resolving explicitly turns that
+        // silent miss into a real, reportable error.
+        const entity = await client.getEntity(channel);
+
+        // Only pass minId when we actually have a checkpoint; some GramJS
+        // versions treat minId:0 inconsistently.
+        const opts = sinceId > 0 ? { limit: 50, minId: sinceId } : { limit: 25 };
+        const messages = await client.getMessages(entity, opts);
 
         let maxId = sinceId;
+        let textCount = 0;
         for (const msg of messages) {
           if (msg.id > maxId) maxId = msg.id;
           const text = msg.message;
-          if (!text || !text.trim()) continue;
+          if (!text || !text.trim()) continue; // media-only posts have no text
+          textCount++;
           const tickers = detectTickers(text);
           newItems.push({
             id: `tg-${channel}-${msg.id}`,
@@ -118,16 +142,18 @@ async function ingestNewSignals(lastMessageIdByChannel) {
             source: `telegram:@${channel}`,
           });
         }
+        perChannel[channel] = { fetched: messages.length, withText: textCount, newCheckpoint: maxId };
         updatedCheckpoints[channel] = maxId;
       } catch (err) {
         errors.push(`${channel}: ${err.message}`);
+        perChannel[channel] = { error: err.message };
       }
     }
   } finally {
     await client.disconnect().catch(() => {});
   }
 
-  return { configured: true, newItems, updatedCheckpoints, errors };
+  return { configured: true, newItems, updatedCheckpoints, perChannel, errors };
 }
 
 module.exports = { ingestNewSignals, isConfigured, getConfiguredChannels };
