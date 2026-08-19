@@ -83,9 +83,40 @@ async function loadOpsStatus() {
     const lastWatchdog = watchdogHistory.length ? watchdogHistory[watchdogHistory.length - 1] : null;
     const actionableFlags = lastWatchdog ? lastWatchdog.flags.filter((f) => f.severity !== 'info') : [];
 
+    const providerRows = (health.providerHealth || [])
+      .map((p) => {
+        const badge =
+          p.status === 'ok'
+            ? '<span class="pos">● working</span>'
+            : p.status === 'failing'
+            ? '<span class="neg">● failing</span>'
+            : p.status === 'untested'
+            ? '<span class="dim">○ configured, not yet used</span>'
+            : '<span class="dim">○ not configured</span>';
+        const detail = p.status === 'failing'
+          ? `<div class="neg" style="font-size:11px;margin-top:4px;">${escapeHtml(p.lastError || '')}</div>
+             ${p.hint ? `<div class="dim" style="font-size:11px;margin-top:2px;">→ ${escapeHtml(p.hint)}</div>` : ''}`
+          : '';
+        return `<tr><td>AI provider — ${escapeHtml(p.label)}</td><td>${badge}${detail}</td></tr>`;
+      })
+      .join('');
+
+    const workingCount = (health.providerHealth || []).filter((p) => p.configured && p.status !== 'failing').length;
+    const configuredCount = (health.providerHealth || []).filter((p) => p.configured).length;
+    const councilLine =
+      configuredCount === 0
+        ? '<span class="neg">no AI provider configured</span>'
+        : workingCount >= 2
+        ? `<span class="pos">● negotiating across ${workingCount} models</span>`
+        : workingCount === 1
+        ? '<span class="dim">single voice — add/repair a second provider for negotiation</span>'
+        : '<span class="neg">● all providers failing</span>';
+
     el.innerHTML = `
       <table>
         <tbody>
+          <tr><td>The Council</td><td>${councilLine}</td></tr>
+          ${providerRows}
           <tr><td>Telegram outbound (alerts + chat)</td><td>${statusPill(health.telegramOutboundConfigured)}</td></tr>
           <tr><td>Telegram channel ingestion</td><td>${statusPill(health.telegramIngestConfigured)}${health.telegramIngestChannels.length ? ` <span class="dim">(${health.telegramIngestChannels.join(', ')})</span>` : ''}</td></tr>
           <tr><td>Portfolio watchdog — last run</td><td>${lastWatchdog ? `${new Date(lastWatchdog.ts).toLocaleString()} · ${actionableFlags.length ? actionableFlags.length + ' flag(s)' : 'all clear'}` : '<span class="dim">no runs yet — needs cron-job.org wired up</span>'}</td></tr>

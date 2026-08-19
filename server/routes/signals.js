@@ -112,26 +112,34 @@ router.post('/ingest', async (req, res) => {
       const freshTickers = new Set(result.newItems.flatMap((i) => i.tickers));
       const convergences = computeConvergence(context.signals.items).filter((c) => freshTickers.has(c.ticker));
       if (convergences.length) {
-        // A new convergence is a significant signal — get the Council's
-        // quick multi-model read before alerting. Never blocks the alert.
+        // A new convergence is exactly the moment worth arguing about, so the
+        // full Council brainstorms it (independent takes → rebuttals →
+        // consensus) rather than giving a one-shot opinion. Never blocks the
+        // alert: if the Council is down, the alert still goes out and says so.
         let councilRead = null;
         try {
           const relatedSignals = context.signals.items
             .filter((s) => s.tickers.some((t) => convergences.some((c) => c.ticker === t)))
-            .slice(-10);
-          councilRead = await council.quickTake(
+            .slice(-12);
+          const brainstorm = await council.brainstormSignals(
             SYSTEM_PERSONA,
-            `New signal convergence just detected in Yinon's followed channels:\n${convergences
+            `New signal convergence just detected across Yinon's followed Telegram channels:\n${convergences
               .map((c) => `- ${c.ticker}: ${c.count} mentions in ${CONVERGENCE_WINDOW_DAYS}d${c.strongConvergence ? ' (strong)' : ''}`)
-              .join('\n')}\n\nThe underlying signals (raw pastes/channel posts):\n${JSON.stringify(relatedSignals, null, 2)}`
+              .join('\n')}\n\nThe underlying posts (note: channels are often Hebrew — read them as-is):\n${JSON.stringify(
+              relatedSignals,
+              null,
+              2
+            )}`
           );
+          councilRead = brainstorm.text;
         } catch (err) {
-          console.error('[signals:ingest] council quickTake failed:', err.message);
+          console.error('[signals:ingest] council brainstorm failed:', err.message);
+          councilRead = `(Council brainstorm failed: ${err.message.slice(0, 200)})`;
         }
 
         const text = `FinancialEdge — new convergence detected:\n\n${convergences
           .map((c) => `• ${c.ticker}: ${c.count} mentions in ${CONVERGENCE_WINDOW_DAYS}d${c.strongConvergence ? ' (strong)' : ''}`)
-          .join('\n')}${councilRead ? `\n\nCouncil read: ${councilRead}` : ''}`;
+          .join('\n')}${councilRead ? `\n\n${councilRead}` : ''}`;
         await sendMessage(text).catch((err) => console.error('[signals:ingest] alert send failed:', err.message));
       }
     }

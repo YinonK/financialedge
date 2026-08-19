@@ -29,6 +29,98 @@ const openaiProvider = require('./providers/openaiProvider');
 
 const ALL_PROVIDERS = [geminiProvider, anthropicProvider, openaiProvider];
 
+/**
+ * Per-provider health, so a dead key, an exhausted quota, or a provider
+ * outage is visible instead of silently shrinking the Council. Nothing here
+ * is persisted — it's the live picture since the last server start, which is
+ * what you want when diagnosing "why did the Council only have one voice?"
+ */
+const health = {}; // { [providerId]: { ok, lastOkAt, lastErrorAt, lastError, consecutiveFailures } }
+
+function recordSuccess(id) {
+  const h = health[id] || {};
+  health[id] = {
+    ...h,
+    ok: true,
+    lastOkAt: new Date().toISOString(),
+    lastError: null,
+    consecutiveFailures: 0,
+  };
+}
+
+function recordFailure(id, message) {
+  const h = health[id] || {};
+  health[id] = {
+    ...h,
+    ok: false,
+    lastErrorAt: new Date().toISOString(),
+    lastError: message,
+    consecutiveFailures: (h.consecutiveFailures || 0) + 1,
+  };
+}
+
+/**
+ * Every provider call goes through here so health is always current and a
+ * failure is always logged with the provider that caused it.
+ */
+async function callProvider(provider, systemInstruction, historyOrPrompt, opts) {
+  try {
+    const out = await provider.generate(systemInstruction, historyOrPrompt, opts);
+    recordSuccess(provider.id);
+    return out;
+  } catch (err) {
+    recordFailure(provider.id, err.message);
+    console.error(`[council] ${provider.id} call failed:`, err.message);
+    throw err;
+  }
+}
+
+/**
+ * Health snapshot for /api/health and the Home ops panel, with a plain-language
+ * hint about what to actually do when something is broken.
+ */
+function getProviderHealth() {
+  return ALL_PROVIDERS.map((p) => {
+    const configured = p.isConfigured();
+    const h = health[p.id] || {};
+    return {
+      id: p.id,
+      label: p.label,
+      configured,
+      status: !configured ? 'not_configured' : h.ok === false ? 'failing' : h.ok === true ? 'ok' : 'untested',
+      lastOkAt: h.lastOkAt || null,
+      lastErrorAt: h.lastErrorAt || null,
+      lastError: h.lastError || null,
+      consecutiveFailures: h.consecutiveFailures || 0,
+      hint: !configured ? null : h.ok === false ? hintFor(p.id, h.lastError) : null,
+    };
+  });
+}
+
+function hintFor(id, error) {
+  const e = (error || '').toLowerCase();
+  if (e.includes('503') || e.includes('high demand') || e.includes('unavailable')) {
+    return 'Provider is overloaded right now (common on Gemini\'s free tier). Usually clears on its own — the Council keeps running on the other providers meanwhile.';
+  }
+  if (e.includes('429') || e.includes('quota') || e.includes('rate')) {
+    return 'Rate limit or quota exhausted. Wait for the window to reset, or add billing to raise the limit.';
+  }
+  if (e.includes('401') || e.includes('403') || e.includes('api key') || e.includes('unauthorized') || e.includes('authentication')) {
+    return id === 'gemini'
+      ? 'Key rejected. Check GEMINI_API_KEY in Render → Environment (free key at aistudio.google.com/apikey).'
+      : id === 'anthropic'
+      ? 'Key rejected. Check ANTHROPIC_API_KEY in Render → Environment (console.anthropic.com).'
+      : 'Key rejected. Check OPENAI_API_KEY in Render → Environment (platform.openai.com).';
+  }
+  if (e.includes('credit') || e.includes('billing') || e.includes('insufficient')) {
+    return 'Account is out of credit. Top up billing for this provider to bring it back into the Council.';
+  }
+  if (e.includes('404') || e.includes('not found') || e.includes('no longer available')) {
+    return 'The configured model name is not available to this account. Set the matching *_MODEL env var to a model your account can use.';
+  }
+  return 'Check the provider\'s dashboard and the Render logs for details.';
+}
+
 function configuredProviders() {
   return ALL_PROVIDERS.filter((p) => p.isConfigured());
 }
@@ -74,10 +166,9 @@ async function chairGenerate(systemInstruction, history, opts = {}) {
   const failures = [];
   for (const provider of ordered) {
     try {
-      return await provider.generate(systemInstruction, history, opts);
+      return await callProvider(provider, systemInstruction, history, opts);
     } catch (err) {
       failures.push(`${provider.id}: ${err.message}`);
-      console.error(`[council] ${provider.id} failed, trying next provider:`, err.message);
     }
   }
 
@@ -136,7 +227,7 @@ async function deliberate(systemPersona, prompt, schema) {
 
   // ---- Round 1: independent takes ----
   const round1Results = await Promise.allSettled(
-    providers.map((p) => p.generate(systemPersona, [{ role: 'user', content: prompt }], { json: true }))
+    providers.map((p) => callProvider(p, systemPersona, [{ role: 'user', content: prompt }], { json: true }))
   );
 
   const round1 = [];
@@ -194,7 +285,7 @@ Schema reminder:
 ${schema}`;
 
       const provider = providers.find((p) => p.id === mine.provider);
-      return provider.generate(systemPersona, [{ role: 'user', content: rebuttalPrompt }], { json: true });
+      return callProvider(provider, systemPersona, [{ role: 'user', content: rebuttalPrompt }], { json: true });
     })
   );
 
@@ -229,7 +320,9 @@ Rules: a split council on a high-risk trade should pull the conviction score DOW
 
   let consensus = null;
   try {
-    const merged = await chair.generate(systemPersona, [{ role: 'user', content: mergePrompt }], { json: true });
+    // chairGenerate (not chair.generate) so a chair outage falls through to
+    // another provider rather than losing the merged consensus entirely.
+    const merged = await chairGenerate(systemPersona, [{ role: 'user', content: mergePrompt }], { json: true });
     consensus = tryParse(merged);
   } catch (err) {
     errors.push(`chair merge failed: ${err.message}`);
@@ -306,11 +399,78 @@ Give your read in 2-3 sharp sentences: what this means, and what Yinon should be
   }
 }
 
+const SIGNAL_SCHEMA = `{
+  "headline": string,                  // one sharp line: what is actually happening with these names
+  "whatChannelsAreSaying": string,     // the substance of the chatter, not just that it exists
+  "caseFor": string,                   // why this could be a real opportunity
+  "caseForNoise": string,              // why this could be hype, promotion, or coincidence
+  "keyRisk": string,                   // the single thing most likely to burn this
+  "priority": "high"|"medium"|"low",   // how much of Yinon's attention this deserves right now
+  "worthResearching": boolean          // should he run a full Five Lenses on it
+}`;
+
+/**
+ * Full Council brainstorm on a fresh signal convergence — the same
+ * independent-takes → rebuttals → consensus flow as a research call, because
+ * a convergence is exactly the moment worth arguing about. Returns formatted
+ * text ready for a Telegram alert, plus the structured result.
+ *
+ * Degrades cleanly: whichever providers are alive do the thinking; a dead
+ * provider is dropped from the Council and named in the output so Yinon can
+ * see the Council ran short-handed and go fix it.
+ */
+async function brainstormSignals(systemPersona, situation) {
+  const providers = configuredProviders();
+  if (!providers.length) {
+    return { text: '(No AI provider configured — add a key to get the Council\'s read.)', result: null };
+  }
+
+  const prompt = `${situation}
+
+Brainstorm this convergence as a desk. Be concrete about what these names are and why the chatter clustered now. Never tell Yinon to place a trade — he decides and executes everything himself.
+
+Respond as JSON matching this schema exactly:
+${SIGNAL_SCHEMA}`;
+
+  try {
+    const result = await deliberate(systemPersona, prompt, SIGNAL_SCHEMA);
+    const c = result.consensus || {};
+
+    const lines = [];
+    if (c.headline) lines.push(c.headline);
+    lines.push('');
+    if (c.whatChannelsAreSaying) lines.push(`Chatter: ${c.whatChannelsAreSaying}`);
+    if (c.caseFor) lines.push(`For: ${c.caseFor}`);
+    if (c.caseForNoise) lines.push(`Noise case: ${c.caseForNoise}`);
+    if (c.keyRisk) lines.push(`Key risk: ${c.keyRisk}`);
+    if (c.priority) lines.push(`Priority: ${c.priority}${c.worthResearching ? ' — worth a full Five Lenses' : ''}`);
+    if (c.disagreements) lines.push(`Council split: ${c.disagreements}`);
+
+    const voices = result.providersUsed.length;
+    const total = providers.length;
+    lines.push('');
+    lines.push(
+      `— Council: ${result.providersUsed.join(', ')}${result.negotiated ? ' (negotiated)' : ' (single voice)'}${
+        voices < total ? ` ⚠ ${total - voices} provider(s) unavailable — check Home → Brain Operations` : ''
+      }`
+    );
+
+    return { text: lines.join('\n'), result };
+  } catch (err) {
+    return {
+      text: `(Council unavailable — every AI provider failed: ${err.message.slice(0, 300)}. Check Home → Brain Operations.)`,
+      result: null,
+    };
+  }
+}
+
 module.exports = {
   deliberate,
+  brainstormSignals,
   quickTake,
   chairGenerate,
   chairProvider,
   configuredProviders,
   anyConfigured,
+  getProviderHealth,
 };

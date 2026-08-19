@@ -43,6 +43,7 @@ app.get('/api/health', (req, res) => {
     aiProviders: providers.map((p) => p.label),
     aiChair: chair ? chair.label : null,
     councilNegotiation: providers.length >= 2,
+    providerHealth: council.getProviderHealth(),
     telegramOutboundConfigured: telegram.isConfigured(),
     telegramIngestConfigured: telegramIngest.isConfigured(),
     telegramIngestChannels: telegramIngest.getConfiguredChannels(),
