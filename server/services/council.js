@@ -49,16 +49,39 @@ function chairProvider() {
   return providers.find((p) => p.id === preferred) || providers[0];
 }
 
+/**
+ * Single-voice generation with automatic failover.
+ *
+ * The chair speaks first, but providers go down — Gemini's free tier in
+ * particular returns 503 "high demand" fairly often. Rather than fail the
+ * whole request when the chair is unavailable, fall through to the other
+ * configured providers in order. Only throws if every provider fails,
+ * and then reports what each one said.
+ */
 async function chairGenerate(systemInstruction, history, opts = {}) {
-  const chair = chairProvider();
-  if (!chair) {
+  const providers = configuredProviders();
+  if (!providers.length) {
     const err = new Error(
       'No AI provider configured. Add at least one key to .env: GEMINI_API_KEY (free, https://aistudio.google.com/apikey), ANTHROPIC_API_KEY, or OPENAI_API_KEY.'
     );
     err.code = 'NOT_CONFIGURED';
     throw err;
   }
-  return chair.generate(systemInstruction, history, opts);
+
+  const chair = chairProvider();
+  const ordered = [chair, ...providers.filter((p) => p.id !== chair.id)];
+
+  const failures = [];
+  for (const provider of ordered) {
+    try {
+      return await provider.generate(systemInstruction, history, opts);
+    } catch (err) {
+      failures.push(`${provider.id}: ${err.message}`);
+      console.error(`[council] ${provider.id} failed, trying next provider:`, err.message);
+    }
+  }
+
+  throw new Error(`All AI providers failed. ${failures.join(' | ')}`);
 }
 
 function stripFences(text) {
@@ -247,10 +270,20 @@ Give your read in 2-3 sharp sentences: what this means, and what Yinon should be
 
   const takes = [];
   providers.forEach((p, i) => {
-    if (results[i].status === 'fulfilled') takes.push({ provider: p.id, label: p.label, text: results[i].value.trim() });
+    if (results[i].status === 'fulfilled') {
+      takes.push({ provider: p.id, label: p.label, text: results[i].value.trim() });
+    } else {
+      console.error(`[council:quickTake] ${p.id} failed:`, results[i].reason && results[i].reason.message);
+    }
   });
 
-  if (!takes.length) return null;
+  // Every provider failed — say so in the alert rather than silently
+  // dropping the Council's read, so a dead key/quota is visible immediately.
+  if (!takes.length) {
+    return `(Council unavailable — all AI providers failed: ${providers
+      .map((p, i) => `${p.id}: ${results[i].reason ? results[i].reason.message.slice(0, 120) : 'unknown'}`)
+      .join(' | ')})`;
+  }
   if (takes.length === 1) return takes[0].text;
 
   try {
