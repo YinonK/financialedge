@@ -40,6 +40,25 @@ app.use('/api/review', reviewRoutes);
 app.use('/api/telegram/webhook', telegramWebhookRoutes);
 app.use('/api/context', contextRoutes);
 
+/**
+ * Keep-alive ping. Deliberately the cheapest possible route: no auth, no
+ * disk, no network, no JSON building — just a 200 with two bytes.
+ *
+ * Why it exists: Render's free tier sleeps after ~15 minutes idle, and a cold
+ * start takes 30-60s. The scheduled jobs (ingest every 15 min, watchdog every
+ * 30) were landing right on that boundary and hitting a sleeping instance,
+ * which blows past cron-job.org's 30s timeout and shows up as a 503. A ping
+ * every ~10 minutes keeps the instance warm so the real jobs always hit a
+ * live server.
+ *
+ * Kept separate from /api/health on purpose — health is a diagnostics
+ * endpoint whose payload grows over time and reveals configuration state.
+ * This one has a stable, boring contract and discloses nothing.
+ */
+app.get('/api/ping', (req, res) => {
+  res.type('text/plain').status(200).send('ok');
+});
+
 app.get('/api/health', (req, res) => {
   const providers = council.configuredProviders();
   const chair = council.chairProvider();
