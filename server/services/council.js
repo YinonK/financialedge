@@ -23,11 +23,10 @@
  * Yinon executes. No path from any conclusion to any order anywhere.
  */
 
-const geminiProvider = require('./providers/geminiProvider');
-const anthropicProvider = require('./providers/anthropicProvider');
-const openaiProvider = require('./providers/openaiProvider');
+const registry = require('./providers');
+const roles = require('./roles');
 
-const ALL_PROVIDERS = [geminiProvider, anthropicProvider, openaiProvider];
+const ALL_PROVIDERS = registry.all();
 
 /**
  * Per-provider health, so a dead key, an exhausted quota, or a provider
@@ -464,7 +463,106 @@ ${SIGNAL_SCHEMA}`;
   }
 }
 
+/**
+ * Convene the full role-based Council.
+ *
+ * Each seat (Bull, Bear, Risk Manager, Fact-Checker, Macro Analyst) analyzes
+ * the same situation in parallel under its own adversarial mandate, then the
+ * CFO synthesizes — with the Risk Manager carrying veto weight and verified
+ * facts kept explicitly separate from unverified signal claims.
+ *
+ * Degrades honestly: seats that fail are dropped and named, and the CFO is
+ * told which seats are missing so it can't pretend they agreed. With a single
+ * provider configured, one model plays every seat — still worthwhile, because
+ * the adversarial structure lives in the prompts, not in the model diversity.
+ *
+ * @returns {{ ok, verdict, seats, missingSeats, providersUsed, errors }}
+ */
+async function convene(situation, opts = {}) {
+  const providers = configuredProviders();
+  if (!providers.length) {
+    const err = new Error(
+      'No AI provider configured. Add at least one key to .env: GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY.'
+    );
+    err.code = 'NOT_CONFIGURED';
+    throw err;
+  }
+
+  const errors = [];
+  const assignments = roles.assignRoles(providers, opts.roleIds);
+
+  // --- All seats deliberate in parallel ---
+  const seatResults = await Promise.allSettled(
+    assignments.map(({ role, provider }) =>
+      callProvider(
+        provider,
+        `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${role.title}.`,
+        [{ role: 'user', content: roles.buildRolePrompt(role, situation) }],
+        { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
+      )
+    )
+  );
+
+  const seats = [];
+  assignments.forEach(({ role, provider, usingPreferred }, i) => {
+    const r = seatResults[i];
+    if (r.status !== 'fulfilled') {
+      errors.push(`${role.title} (${provider.id}): ${r.reason.message}`);
+      return;
+    }
+    const parsed = tryParse(r.value);
+    if (!parsed) {
+      errors.push(`${role.title} (${provider.id}): returned unparseable JSON`);
+      return;
+    }
+    seats.push({
+      roleId: role.id,
+      title: role.title,
+      providerId: provider.id,
+      providerLabel: provider.label,
+      usingPreferredProvider: usingPreferred,
+      output: parsed,
+    });
+  });
+
+  if (!seats.length) {
+    throw new Error(`Every Council seat failed. ${errors.join(' | ')}`);
+  }
+
+  // --- CFO synthesis (with failover if the chair provider is down) ---
+  const chairPrompt = roles.buildChairPrompt(situation, seats);
+  let verdict = null;
+  try {
+    const merged = await chairGenerate(
+      `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${roles.CHAIR_ROLE.title} (chair).`,
+      [{ role: 'user', content: chairPrompt }],
+      { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
+    );
+    verdict = tryParse(merged);
+  } catch (err) {
+    errors.push(`CFO synthesis failed: ${err.message}`);
+  }
+
+  if (!verdict) {
+    errors.push('CFO synthesis unavailable — returning raw seat output without a merged verdict.');
+  }
+
+  const missingSeats = Object.values(roles.ROLES)
+    .filter((r) => !seats.some((s) => s.roleId === r.id))
+    .map((r) => r.title);
+
+  return {
+    ok: Boolean(verdict),
+    verdict,
+    seats,
+    missingSeats,
+    providersUsed: [...new Set(seats.map((s) => s.providerLabel))],
+    errors,
+  };
+}
+
 module.exports = {
+  convene,
   deliberate,
   brainstormSignals,
   quickTake,
@@ -473,4 +571,5 @@ module.exports = {
   configuredProviders,
   anyConfigured,
   getProviderHealth,
+  ROLES: roles.ROLES,
 };

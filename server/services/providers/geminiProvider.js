@@ -4,9 +4,12 @@
  * Gemini provider. Server-side only — the key never reaches the browser.
  */
 
-// gemini-flash-latest is Google's rolling alias for the newest Flash model —
-// a safe default that won't 404 as older model IDs get retired for new accounts.
-const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+// Rolling alias, not a pinned version — pinned IDs get retired for new
+// accounts without warning (gemini-2.5-flash 404'd on us in production).
+// Defaults to Pro: this provider carries the Macro / Live-Web Analyst seat on
+// the Council, where grounding quality matters more than per-token cost.
+// Override with GEMINI_MODEL (e.g. gemini-flash-latest to run cheap).
+const MODEL = process.env.GEMINI_MODEL || 'gemini-pro-latest';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 function isConfigured() {

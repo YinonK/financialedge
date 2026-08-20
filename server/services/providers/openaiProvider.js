@@ -5,7 +5,9 @@
  * https://platform.openai.com. Key lives in .env only, never the browser.
  */
 
-const MODEL = process.env.OPENAI_MODEL || 'gpt-5';
+// GPT-5.6 Terra: mid-tier reasoning at $2/$12 per M tokens. Carries the
+// Fact-Checker seat, where hallucination-resistance is the whole job.
+const MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-terra';
 const API_URL = 'https://api.openai.com/v1/chat/completions';
 
 function isConfigured() {
@@ -33,9 +35,9 @@ async function generate(systemInstruction, history, opts = {}) {
   if (opts.json) {
     body.response_format = { type: 'json_object' };
   }
-  // Newer OpenAI reasoning-family models reject non-default temperature;
-  // only pass it for models known to accept it.
-  if (opts.temperature != null && !/^(gpt-5|o\d)/.test(MODEL)) {
+  // Newer OpenAI reasoning-family models reject a non-default temperature.
+  // Sending one anyway is a hard 400, so only pass it for older models.
+  if (opts.temperature != null && !/^(gpt-5|gpt-6|o\d)/.test(MODEL)) {
     body.temperature = opts.temperature;
   }
 
