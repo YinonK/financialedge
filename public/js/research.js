@@ -34,11 +34,25 @@ function renderResult(data) {
         <h3 style="color:var(--accent-red);">What kills this trade</h3>
         <p>${escapeHtml(b.whatKillsThisTrade || '')}</p>
       </div>
-      ${b.disagreements ? `
+      ${(b.verifiedFacts && b.verifiedFacts.length) || (b.unverifiedClaims && b.unverifiedClaims.length) ? `
+      <div class="lens-grid" style="margin-top:14px;">
+        <div class="lens-block" style="border-color:var(--accent-green);">
+          <h3 style="color:var(--accent-green);">Verified against real data</h3>
+          <p>${b.verifiedFacts && b.verifiedFacts.length ? b.verifiedFacts.map(escapeHtml).join('<br>• ') : 'nothing independently verified'}</p>
+        </div>
+        <div class="lens-block" style="border-color:var(--accent-gold);">
+          <h3 style="color:var(--accent-gold);">Signal claims we could NOT verify</h3>
+          <p>${b.unverifiedClaims && b.unverifiedClaims.length ? b.unverifiedClaims.map(escapeHtml).join('<br>• ') : 'none'}</p>
+        </div>
+      </div>` : ''}
+      ${b.councilDisagreements && b.councilDisagreements.toLowerCase() !== 'none' ? `
       <div class="lens-block" style="margin-top:14px;border-color:var(--accent-purple);">
         <h3 style="color:var(--accent-purple);">Council disagreements ${b.councilAlignment ? `<span class="dim" style="font-size:11px;">(${escapeHtml(b.councilAlignment)})</span>` : ''}</h3>
-        <p>${escapeHtml(b.disagreements)}</p>
+        <p>${escapeHtml(b.councilDisagreements)}</p>
+        ${b.catfishResponse ? `<p style="margin-top:8px;"><strong>After opposition:</strong> ${escapeHtml(b.catfishResponse)}</p>` : ''}
       </div>` : ''}
+      ${b.watchDates && b.watchDates.length ? `<div class="dim" style="margin-top:12px;font-size:12px;">Watch dates: ${b.watchDates.map(escapeHtml).join(' · ')}</div>` : ''}
+      ${b.suggestedNextStep ? `<div class="dim" style="margin-top:6px;font-size:12px;">Next step: ${escapeHtml(b.suggestedNextStep)}</div>` : ''}
     </div>
   `
     : `<div class="card"><div class="empty-state">${escapeHtml(data.brainError || 'The Brain did not return an analysis.')}</div></div>`;
@@ -65,32 +79,68 @@ function renderResult(data) {
 }
 
 function renderCouncil(c) {
-  if (!c || !c.round1 || !c.round1.length) return '';
-  const finalTakes = c.round2 || c.round1;
-  const votes = finalTakes
-    .map((r) => {
-      const take = r.take || {};
+  if (!c || !c.seats || !c.seats.length) return '';
+
+  const seatCards = c.seats
+    .map((s) => {
+      const o = s.output || {};
+      // Each seat has its own shape — show the line that matters most for it.
+      const headline =
+        o.thesis ||
+        o.assessment ||
+        o.regimeRead ||
+        o.crowdRead ||
+        o.reliabilityNote ||
+        '';
+      const verdictBits = [
+        o.riskRewardVerdict ? `risk: ${o.riskRewardVerdict}` : null,
+        o.macroVerdict ? `macro: ${o.macroVerdict}` : null,
+        o.sentimentVerdict ? `sentiment: ${o.sentimentVerdict}` : null,
+        o.overallReliability ? `source reliability: ${o.overallReliability}` : null,
+        o.hypeCycleStage ? `hype cycle: ${o.hypeCycleStage}` : null,
+        o.confidence != null ? `confidence ${o.confidence}/10` : null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+
       return `
       <div class="lens-block">
-        <h3>${escapeHtml(r.label)}</h3>
-        <p>
-          <span class="badge ${take.verdict ? take.verdict.toLowerCase() : ''}">${escapeHtml(take.verdict || '—')}</span>
-          <span class="dim" style="margin-left:8px;">conviction ${take.conviction != null ? take.conviction + '/10' : '—'}</span>
-        </p>
-        ${take.rebuttal ? `<p style="margin-top:8px;font-size:12px;"><strong>Rebuttal:</strong> ${escapeHtml(take.rebuttal)}</p>` : ''}
+        <h3>${escapeHtml(s.title)} <span class="dim" style="font-size:11px;font-weight:400;">${escapeHtml(s.providerLabel)}</span></h3>
+        ${headline ? `<p>${escapeHtml(headline)}</p>` : ''}
+        ${verdictBits ? `<p class="dim" style="font-size:12px;margin-top:6px;">${escapeHtml(verdictBits)}</p>` : ''}
         <details style="margin-top:8px;">
-          <summary class="dim" style="cursor:pointer;font-size:11px;">full take</summary>
-          <pre style="font-size:11px;white-space:pre-wrap;overflow-x:auto;">${escapeHtml(JSON.stringify(take, null, 2))}</pre>
+          <summary class="dim" style="cursor:pointer;font-size:11px;">full seat output</summary>
+          <pre style="font-size:11px;white-space:pre-wrap;overflow-x:auto;">${escapeHtml(JSON.stringify(o, null, 2))}</pre>
         </details>
       </div>`;
     })
     .join('');
 
+  const cat = c.catfish && c.catfish.output;
+  const catfishBlock = cat
+    ? `
+    <div class="lens-block" style="margin-top:14px;border-color:var(--accent-purple);">
+      <h3 style="color:var(--accent-purple);">Catfish — Mandatory Opposition <span class="dim" style="font-size:11px;font-weight:400;">${escapeHtml(c.catfish.providerLabel)}</span></h3>
+      <p class="dim" style="font-size:12px;">Groupthink risk: <strong>${escapeHtml(cat.groupthinkRisk || '—')}</strong>${cat.convergedTooFast ? ' · converged too fast' : ''}${
+        c.revisedAfterCatfish ? ' · <span class="pos">forced a CFO revision</span>' : cat.demandsRevision ? ' · demanded revision' : ' · no revision demanded'
+      }</p>
+      ${cat.strongestObjection ? `<p style="margin-top:6px;"><strong>Objection:</strong> ${escapeHtml(cat.strongestObjection)}</p>` : ''}
+      ${cat.contraryScenario ? `<p style="margin-top:6px;"><strong>If we're wrong:</strong> ${escapeHtml(cat.contraryScenario)}</p>` : ''}
+      ${cat.launderedClaims && cat.launderedClaims.length ? `<p style="margin-top:6px;" class="neg"><strong>Unverified claims doing real work:</strong> ${cat.launderedClaims.map(escapeHtml).join('; ')}</p>` : ''}
+      <details style="margin-top:8px;">
+        <summary class="dim" style="cursor:pointer;font-size:11px;">full opposition</summary>
+        <pre style="font-size:11px;white-space:pre-wrap;overflow-x:auto;">${escapeHtml(JSON.stringify(cat, null, 2))}</pre>
+      </details>
+    </div>`
+    : '';
+
   return `
     <div class="card">
-      <h2>The Council ${c.negotiated ? '<span class="dim" style="font-size:12px;font-weight:400;">— negotiated: independent takes, then rebuttals, then consensus</span>' : '<span class="dim" style="font-size:12px;font-weight:400;">— single voice (add a second AI key for negotiation)</span>'}</h2>
-      <div class="lens-grid">${votes}</div>
-      ${c.errors && c.errors.length ? `<div class="dim" style="margin-top:10px;font-size:11px;">Notes: ${c.errors.map(escapeHtml).join(' · ')}</div>` : ''}
+      <h2>The Council <span class="dim" style="font-size:12px;font-weight:400;">— ${c.seats.length} specialized seats across ${c.providersUsed.length} model(s)${c.revisedAfterCatfish ? ', verdict revised after opposition' : ''}</span></h2>
+      <div class="lens-grid">${seatCards}</div>
+      ${catfishBlock}
+      ${c.missingSeats && c.missingSeats.length ? `<div class="neg" style="margin-top:10px;font-size:11px;">⚠ Seats that failed to report: ${c.missingSeats.map(escapeHtml).join(', ')} — see Home → Brain Operations</div>` : ''}
+      ${c.errors && c.errors.length ? `<div class="dim" style="margin-top:6px;font-size:11px;">Notes: ${c.errors.map(escapeHtml).join(' · ')}</div>` : ''}
     </div>
   `;
 }

@@ -133,11 +133,16 @@ function anyConfigured() {
  * council output). Defaults to the first configured provider; override with
  * AI_CHAIR=gemini|anthropic|openai in .env.
  */
+/**
+ * Single source of truth for who chairs. Delegates to roles.assignChair so
+ * the chair used by chairGenerate and the chair the Catfish is told to avoid
+ * can never disagree — they did briefly, and the Catfish ended up dodging the
+ * wrong model.
+ */
 function chairProvider() {
   const providers = configuredProviders();
   if (!providers.length) return null;
-  const preferred = process.env.AI_CHAIR;
-  return providers.find((p) => p.id === preferred) || providers[0];
+  return roles.assignChair(providers, process.env.AI_CHAIR);
 }
 
 /**
@@ -491,13 +496,20 @@ async function convene(situation, opts = {}) {
   const errors = [];
   const assignments = roles.assignRoles(providers, opts.roleIds);
 
+  // Reflection: what we said about this name before and how it played out,
+  // plus any calibration lesson the track record actually supports. Free —
+  // it's context, not an extra model call.
+  const situationWithReflection = opts.reflection
+    ? `${situation}\n\n${opts.reflection}`
+    : situation;
+
   // --- All seats deliberate in parallel ---
   const seatResults = await Promise.allSettled(
     assignments.map(({ role, provider }) =>
       callProvider(
         provider,
         `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${role.title}.`,
-        [{ role: 'user', content: roles.buildRolePrompt(role, situation) }],
+        [{ role: 'user', content: roles.buildRolePrompt(role, situationWithReflection) }],
         { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
       )
     )
@@ -529,15 +541,15 @@ async function convene(situation, opts = {}) {
     throw new Error(`Every Council seat failed. ${errors.join(' | ')}`);
   }
 
-  // --- CFO synthesis (with failover if the chair provider is down) ---
-  const chairPrompt = roles.buildChairPrompt(situation, seats);
+  // --- CFO draft synthesis (with failover if the chair provider is down) ---
+  const chairSystem = `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${roles.CHAIR_ROLE.title} (chair).`;
+  const chairPrompt = roles.buildChairPrompt(situationWithReflection, seats);
   let verdict = null;
   try {
-    const merged = await chairGenerate(
-      `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${roles.CHAIR_ROLE.title} (chair).`,
-      [{ role: 'user', content: chairPrompt }],
-      { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
-    );
+    const merged = await chairGenerate(chairSystem, [{ role: 'user', content: chairPrompt }], {
+      json: true,
+      maxOutputTokens: opts.maxOutputTokens || 8192,
+    });
     verdict = tryParse(merged);
   } catch (err) {
     errors.push(`CFO synthesis failed: ${err.message}`);
@@ -545,6 +557,72 @@ async function convene(situation, opts = {}) {
 
   if (!verdict) {
     errors.push('CFO synthesis unavailable — returning raw seat output without a merged verdict.');
+  }
+
+  // --- Catfish: mandatory opposition, and it has teeth ---
+  // Runs against the CFO's draft, on a different model from the chair where
+  // possible — a seat attacking a draft it wrote itself is compromised.
+  let catfish = null;
+  let revised = false;
+  if (verdict && opts.catfish !== false) {
+    const chair = roles.assignChair(providers, process.env.AI_CHAIR);
+    const catfishProvider =
+      roles.CATFISH_ROLE.preferredProviders
+        .map((pid) => providers.find((p) => p.id === pid && p.id !== chair.id))
+        .find(Boolean) ||
+      providers.find((p) => p.id !== chair.id) ||
+      chair;
+
+    try {
+      const catfishRaw = await callProvider(
+        catfishProvider,
+        `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${roles.CATFISH_ROLE.title}.`,
+        [{ role: 'user', content: roles.buildCatfishPrompt(situationWithReflection, seats, verdict) }],
+        { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
+      );
+      const parsedCatfish = tryParse(catfishRaw);
+      if (!parsedCatfish) {
+        errors.push('Catfish returned unparseable JSON — no opposition applied.');
+      } else {
+        catfish = {
+          providerId: catfishProvider.id,
+          providerLabel: catfishProvider.label,
+          sameModelAsChair: catfishProvider.id === chair.id,
+          output: parsedCatfish,
+        };
+
+        // The objection is binding: if the Catfish demands revision, the CFO
+        // must answer it. Otherwise this seat is decoration.
+        if (parsedCatfish.demandsRevision) {
+          try {
+            const revisedRaw = await chairGenerate(
+              chairSystem,
+              [
+                {
+                  role: 'user',
+                  content: roles.buildChairRevisionPrompt(situationWithReflection, verdict, parsedCatfish),
+                },
+              ],
+              { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
+            );
+            const revisedVerdict = tryParse(revisedRaw);
+            if (revisedVerdict) {
+              verdict = {
+                ...revisedVerdict,
+                draftBeforeCatfish: { verdict: verdict.verdict, conviction: verdict.conviction },
+              };
+              revised = true;
+            } else {
+              errors.push('Catfish demanded revision but the CFO revision was unparseable — draft verdict stands.');
+            }
+          } catch (err) {
+            errors.push(`Catfish-forced CFO revision failed: ${err.message} — draft verdict stands.`);
+          }
+        }
+      }
+    } catch (err) {
+      errors.push(`Catfish seat failed: ${err.message} — verdict stands unchallenged.`);
+    }
   }
 
   const missingSeats = Object.values(roles.ROLES)
@@ -555,14 +633,29 @@ async function convene(situation, opts = {}) {
     ok: Boolean(verdict),
     verdict,
     seats,
+    catfish,
+    revisedAfterCatfish: revised,
     missingSeats,
     providersUsed: [...new Set(seats.map((s) => s.providerLabel))],
     errors,
   };
 }
 
+/**
+ * Convenience wrapper: convene the Council with reflection automatically
+ * pulled from the decision journal for this ticker. Callers that already have
+ * a context object should use this rather than convene() directly, so the
+ * Council never debates a name we've been wrong about before without being
+ * reminded of it.
+ */
+async function conveneWithMemory(situation, context, ticker, opts = {}) {
+  const reflection = require('./reflection').buildReflection(context, ticker);
+  return convene(situation, { ...opts, reflection });
+}
+
 module.exports = {
   convene,
+  conveneWithMemory,
   deliberate,
   brainstormSignals,
   quickTake,

@@ -13,6 +13,9 @@ router.get('/:ticker', async (req, res) => {
     const result = await researchTicker(req.params.ticker.toUpperCase(), {
       portfolioTickers,
       indicatorThresholds: context.indicators.thresholds,
+      // Passed so the Council can be reminded what we said about this name
+      // before and how it actually played out.
+      context,
     });
     res.json(result);
   } catch (err) {

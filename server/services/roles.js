@@ -151,6 +151,85 @@ Use the live indicator data provided. Where you are drawing on your own backgrou
   "confidence": number             // 1-10
 }`,
   },
+
+  sentimentAnalyst: {
+    id: 'sentimentAnalyst',
+    title: 'Sentiment Analyst',
+    // Deliberately NOT merged with Macro. The reference multi-agent trading
+    // framework keeps Fundamentals / Sentiment / News / Technical as separate
+    // seats, and the failure mode of merging them is real: "the crowd is
+    // euphoric" and "the Fed is hawkish" are different facts that point in
+    // different directions, and averaging them inside one seat loses both.
+    preferredProviders: ['gemini', 'anthropic', 'openai'],
+    mandate: `You own crowd psychology and positioning. NOT macro policy — another seat owns rates, the Fed and geopolitics, and you should stay out of their lane. Your question is narrower and more human: what is the crowd feeling and saying about this, and what does that imply?
+
+Cover:
+- Retail chatter and social buzz: Reddit-style enthusiasm, Telegram/WhatsApp forwarding, "everyone is talking about this" energy. Yinon's signals literally arrive from channel chatter, so read the tone of the source material itself, not just its content.
+- Crowding and positioning: does this feel like a consensus long? Is everyone already in? Crowded trades unwind violently.
+- Where in the hype cycle this sits: early and ignored, building, euphoric, or post-blowoff and bitter.
+- Promotional tells: is the chatter organic, or does it read like coordinated pumping? Repeated identical phrasing across sources, urgency language, price targets with no method.
+- Contrarian read: extreme sentiment in either direction is information. Euphoria near highs and disgust near lows both matter.
+
+Be explicit about whether sentiment is a REASON to act or a WARNING. For a bold trader like Yinon the difference between "early in a story the crowd hasn't found" and "late in a story the crowd is drunk on" is the entire trade.
+
+Judge tone from the actual source text provided. Where you're inferring broader sentiment from background knowledge rather than the provided material, label it as such.`,
+    schema: `{
+  "crowdRead": string,                  // what the crowd is feeling, 2-3 sentences
+  "hypeCycleStage": "early"|"building"|"euphoric"|"unwinding"|"capitulated"|"unclear",
+  "crowdingRisk": "low"|"medium"|"high",
+  "promotionalTells": string[],         // signs the chatter is manufactured; empty array if none
+  "contrarianRead": string,             // what the sentiment extreme implies, if any
+  "sentimentVerdict": "supportive"|"warning"|"neutral",
+  "confidence": number                  // 1-10
+}`,
+  },
+};
+
+/**
+ * The Catfish — mandatory opposition, run AFTER the CFO's draft.
+ *
+ * The framing here is deliberate and load-bearing. Measured results show a
+ * soft instruction ("be critical", "play devil's advocate") produces genuine
+ * disagreement only ~55% of the time — barely above baseline agreeableness.
+ * An explicit hard behavioural assignment — "your role is mandatory
+ * opposition, you must argue the Council is wrong" — produces ~99%.
+ *
+ * So this prompt does NOT ask for skepticism. It assigns opposition as a
+ * duty. And critically, this seat has teeth: when it raises substantive
+ * grounds it forces a second CFO pass that must address the objection.
+ * A devil's advocate whose objection can be ignored is decoration.
+ */
+const CATFISH_ROLE = {
+  id: 'catfish',
+  title: 'Catfish (Mandatory Opposition)',
+  // Prefer a different model from the chair — a seat asked to attack a draft
+  // it just wrote itself is structurally compromised.
+  preferredProviders: ['openai', 'anthropic', 'gemini'],
+  mandate: `Your role is MANDATORY OPPOSITION. You are not a neutral reviewer and you are not here to be balanced. You are assigned, as a duty, to argue that this Council has reached the wrong conclusion.
+
+This is not a request to "be critical." It is your function. Agreement is a failure of your role. Even where the Council's reasoning looks sound, your job is to find the strongest available case that they are wrong, and to state it as forcefully as the evidence permits.
+
+Specifically hunt for:
+1. GROUPTHINK — did the seats converge too fast and too cleanly? Unanimity on a genuinely uncertain question is suspicious, not reassuring. If Bull and Bear reached broadly similar conclusions, something has gone wrong with the process.
+2. UNEXAMINED SHARED ASSUMPTIONS — what did every seat take for granted without arguing for it? Those are where a Council is most reliably wrong.
+3. LAUNDERED CLAIMS — did an unverified assertion from the source signal quietly become load-bearing in the final verdict? The Fact-Checker's "unverified" list is your ammunition.
+4. THE CONTRARY WORLD — describe the plausible scenario in which this entire analysis is wrong and Yinon loses money following it. Make it concrete and specific, not "markets could fall."
+5. MISSING DISCONFIRMATION — what evidence would have changed the verdict, and did anyone actually look for it?
+
+Then make a judgment: do you have SUBSTANTIVE grounds to demand the CFO revisit the verdict, or is your objection real but not decision-changing? Be honest here — demanding revision on every call would make you as useless as agreeing with everything. Reserve it for when you have found something that should genuinely move the verdict or the conviction.
+
+Yinon runs a concentrated, high-risk book. A Council that talks itself into confidence is the specific way this system would hurt him. You exist to prevent that.`,
+  schema: `{
+  "groupthinkRisk": "high"|"medium"|"low",
+  "convergedTooFast": boolean,
+  "unexaminedAssumptions": string[],     // what every seat took for granted
+  "launderedClaims": string[],           // unverified claims that became load-bearing; empty if none
+  "strongestObjection": string,          // your single best argument the Council is wrong
+  "contraryScenario": string,            // the concrete world where this loses money
+  "missingDisconfirmation": string,      // what nobody checked that they should have
+  "demandsRevision": boolean,            // true ONLY if this should move the verdict or conviction
+  "revisionReason": string               // what specifically the CFO must address; "" if no revision demanded
+}`,
 };
 
 const CHAIR_ROLE = {
@@ -300,12 +379,68 @@ Respond ONLY with valid JSON matching this schema exactly. No markdown fences, n
 ${CHAIR_ROLE.schema}`;
 }
 
+function buildCatfishPrompt(situation, roleOutputs, draftVerdict) {
+  const transcript = roleOutputs
+    .map((r) => `--- ${r.title} (${r.providerLabel}) ---\n${JSON.stringify(r.output, null, 2)}`)
+    .join('\n\n');
+
+  return `${CATFISH_ROLE.mandate}
+
+=== THE SITUATION ===
+${situation}
+
+=== FULL COUNCIL TRANSCRIPT ===
+${transcript}
+
+=== THE CFO'S DRAFT VERDICT (your target) ===
+${JSON.stringify(draftVerdict, null, 2)}
+
+Attack this. Respond ONLY with valid JSON matching this schema exactly. No markdown fences, no prose outside the JSON:
+${CATFISH_ROLE.schema}`;
+}
+
+/**
+ * Second CFO pass, forced by the Catfish. The chair must engage with the
+ * objection substantively — either revise, or state plainly why the objection
+ * is rejected. "Considered and dismissed" without reasoning is not acceptable.
+ */
+function buildChairRevisionPrompt(situation, draftVerdict, catfishOutput) {
+  return `${CHAIR_ROLE.mandate}
+
+You issued a draft verdict. The Catfish seat — whose assigned duty is mandatory opposition — has raised a substantive objection and you are required to respond to it before the verdict stands.
+
+=== THE SITUATION ===
+${situation}
+
+=== YOUR DRAFT VERDICT ===
+${JSON.stringify(draftVerdict, null, 2)}
+
+=== THE CATFISH'S OBJECTION ===
+${JSON.stringify(catfishOutput, null, 2)}
+
+Now issue your FINAL verdict. You must either:
+(a) revise the verdict, conviction, or reasoning to account for the objection, or
+(b) explicitly explain why the objection does not change your call — with actual reasoning, not dismissal.
+
+Do not simply restate your draft. If the objection identified genuine groupthink or a laundered unverified claim, that should move your conviction downward. If it did not, say why it did not.
+
+Add these two fields to your output alongside the normal schema:
+  "catfishObjection": string,      // the objection, stated fairly in one line
+  "catfishResponse": string        // how you addressed it, or why you rejected it
+
+Respond ONLY with valid JSON matching this schema exactly (plus the two fields above). No markdown fences, no prose outside the JSON:
+${CHAIR_ROLE.schema}`;
+}
+
 module.exports = {
   ROLES,
   CHAIR_ROLE,
+  CATFISH_ROLE,
   SHARED_CONTEXT,
   assignRoles,
   assignChair,
   buildRolePrompt,
   buildChairPrompt,
+  buildCatfishPrompt,
+  buildChairRevisionPrompt,
 };

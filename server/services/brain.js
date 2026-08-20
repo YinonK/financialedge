@@ -37,7 +37,7 @@ If a data lens came back unavailable (marked available:false or status:'na' in t
 
 Respond ONLY with valid JSON matching the requested schema. No markdown fences, no prose outside the JSON.`;
 
-async function researchTicker(symbol, { portfolioTickers = [], indicatorThresholds } = {}) {
+async function researchTicker(symbol, { portfolioTickers = [], indicatorThresholds, context = null } = {}) {
   const [technicals, valuation, flow, indicators, correlations] = await Promise.all([
     safe(() => getTechnicals(symbol)),
     safe(() => getValuation(symbol)),
@@ -85,22 +85,28 @@ Yinon's current portfolio tickers (for correlation/concentration context): ${por
 Produce your Five Lenses take on ${symbol} as JSON matching this schema exactly:
 ${schema}`;
 
-  // The Council: every configured AI provider analyzes independently, then
-  // they see each other's takes and rebut/revise, then the chair merges into
-  // a consensus that must surface real disagreements. One provider = plain
-  // single-model take, zero = clear "not configured" message.
+  // The full role-based Council: Bull, Bear, Risk Manager, Fact-Checker,
+  // Macro and Sentiment each analyze under their own adversarial mandate, the
+  // CFO synthesizes, then the Catfish attacks the draft and can force a
+  // revision. Reflection from the decision journal is injected first, so the
+  // Council is reminded what we said about this name before and how it went.
   let brainAnalysis = null;
   let councilResult = null;
   let brainError = null;
   if (council.anyConfigured()) {
     try {
-      const result = await council.deliberate(SYSTEM_PERSONA, prompt, schema);
-      brainAnalysis = result.consensus;
+      const situation = `${prompt}
+
+The structured Five Lenses data above was gathered server-side from real feeds. Lenses marked available:false or status:'na' have NO data — reason around the gap, never invent numbers to fill it.`;
+
+      const result = await council.conveneWithMemory(situation, context, symbol);
+      brainAnalysis = result.verdict;
       councilResult = {
-        negotiated: result.negotiated,
+        seats: result.seats,
+        catfish: result.catfish,
+        revisedAfterCatfish: result.revisedAfterCatfish,
+        missingSeats: result.missingSeats,
         providersUsed: result.providersUsed,
-        round1: result.round1,
-        round2: result.round2,
         errors: result.errors,
       };
     } catch (err) {
@@ -108,7 +114,7 @@ ${schema}`;
     }
   } else {
     brainError =
-      'No AI provider configured — showing raw Five Lenses data only. Add at least one key to .env: GEMINI_API_KEY (free, https://aistudio.google.com/apikey), ANTHROPIC_API_KEY, or OPENAI_API_KEY.';
+      'No AI provider configured — showing raw Five Lenses data only. Add at least one key to .env: GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY.';
   }
 
   return {
