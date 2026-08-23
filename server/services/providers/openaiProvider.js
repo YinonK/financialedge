@@ -21,6 +21,20 @@ async function generate(systemInstruction, history, opts = {}) {
     throw err;
   }
 
+  const isReasoningModel = /^(gpt-5|gpt-6|o\d)/.test(MODEL);
+
+  // Reasoning models spend max_completion_tokens on INVISIBLE reasoning tokens
+  // before emitting any visible output. If the budget runs out mid-thought you
+  // get HTTP 200 with content: "" and finish_reason: "length" — no error, just
+  // silence. That is exactly how the OpenAI seat vanished from the Council.
+  //
+  // The cap is an upper bound, not a reservation: you're billed for tokens
+  // actually used, so a generous floor is free insurance rather than a cost.
+  const requested = opts.maxOutputTokens || 2048;
+  const maxTokens = isReasoningModel
+    ? Math.max(requested, Number(process.env.OPENAI_MIN_COMPLETION_TOKENS) || 32000)
+    : requested;
+
   const body = {
     model: MODEL,
     messages: [
@@ -30,15 +44,20 @@ async function generate(systemInstruction, history, opts = {}) {
         content: turn.content,
       })),
     ],
-    max_completion_tokens: opts.maxOutputTokens || 2048,
+    max_completion_tokens: maxTokens,
   };
   if (opts.json) {
     body.response_format = { type: 'json_object' };
   }
-  // Newer OpenAI reasoning-family models reject a non-default temperature.
-  // Sending one anyway is a hard 400, so only pass it for older models.
-  if (opts.temperature != null && !/^(gpt-5|gpt-6|o\d)/.test(MODEL)) {
+  // Reasoning-family models reject a non-default temperature outright (400).
+  if (opts.temperature != null && !isReasoningModel) {
     body.temperature = opts.temperature;
+  }
+  // Optional lever: lower reasoning effort leaves more of the budget for actual
+  // output. Opt-in only — an unsupported value is a 400, and we've already been
+  // bitten once by assuming a parameter is safe.
+  if (isReasoningModel && process.env.OPENAI_REASONING_EFFORT) {
+    body.reasoning_effort = process.env.OPENAI_REASONING_EFFORT;
   }
 
   const res = await fetch(API_URL, {
@@ -56,8 +75,41 @@ async function generate(systemInstruction, history, opts = {}) {
   }
 
   const json = JSON.parse(text);
-  const out = json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-  if (!out) throw new Error('OpenAI returned no usable content.');
+  const choice = json.choices && json.choices[0];
+  const message = choice && choice.message;
+
+  // Chat Completions returns a plain string, but some model families return an
+  // array of content parts. Handle both rather than assuming gpt-4-era shape.
+  let out = null;
+  if (message) {
+    if (typeof message.content === 'string') {
+      out = message.content;
+    } else if (Array.isArray(message.content)) {
+      out = message.content.map((part) => (typeof part === 'string' ? part : part.text || '')).join('');
+    }
+  }
+
+  if (!out || !out.trim()) {
+    const finish = choice ? choice.finish_reason : 'unknown';
+    const usage = json.usage || {};
+    const reasoningTokens =
+      (usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens) || 0;
+
+    // Make the failure self-diagnosing — the generic "no usable content" cost
+    // us a production debugging cycle.
+    const diagnosis =
+      finish === 'length'
+        ? `The ${maxTokens}-token budget was exhausted before any visible output (${reasoningTokens} reasoning tokens used). Raise OPENAI_MIN_COMPLETION_TOKENS, or set OPENAI_REASONING_EFFORT=low to leave more budget for the answer.`
+        : finish === 'content_filter'
+        ? 'The response was blocked by a content filter.'
+        : 'The model returned an empty message.';
+
+    throw new Error(
+      `OpenAI returned no usable content (model: ${MODEL}, finish_reason: ${finish}, completion_tokens: ${
+        usage.completion_tokens != null ? usage.completion_tokens : 'n/a'
+      }, reasoning_tokens: ${reasoningTokens}). ${diagnosis}`
+    );
+  }
   return out;
 }
 

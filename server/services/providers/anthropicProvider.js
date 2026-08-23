@@ -23,6 +23,27 @@ async function generate(systemInstruction, history, opts = {}) {
     ? `${systemInstruction}\n\nRespond ONLY with valid JSON. No markdown fences, no prose outside the JSON.`
     : systemInstruction;
 
+  const body = {
+    model: MODEL,
+    max_tokens: opts.maxOutputTokens || 2048,
+    system,
+    messages: history.map((turn) => ({
+      role: turn.role === 'assistant' ? 'assistant' : 'user',
+      content: turn.content,
+    })),
+  };
+
+  // Temperature is deprecated on newer Claude models and sending it is a hard
+  // HTTP 400 — it took the entire Anthropic seat off the Council in production.
+  // We don't need it (the role prompts do the steering), so it's omitted by
+  // default and only sent if explicitly opted into via ANTHROPIC_TEMPERATURE.
+  // Opt-in rather than a model allow-list, so a future model can't break this
+  // again the same way.
+  if (process.env.ANTHROPIC_TEMPERATURE !== undefined && process.env.ANTHROPIC_TEMPERATURE !== '') {
+    const t = Number(process.env.ANTHROPIC_TEMPERATURE);
+    if (Number.isFinite(t)) body.temperature = t;
+  }
+
   const res = await fetch(API_URL, {
     method: 'POST',
     headers: {
@@ -30,16 +51,7 @@ async function generate(systemInstruction, history, opts = {}) {
       'x-api-key': process.env.ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01',
     },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: opts.maxOutputTokens || 2048,
-      temperature: opts.temperature != null ? opts.temperature : 0.6,
-      system,
-      messages: history.map((turn) => ({
-        role: turn.role === 'assistant' ? 'assistant' : 'user',
-        content: turn.content,
-      })),
-    }),
+    body: JSON.stringify(body),
   });
 
   const text = await res.text();
@@ -48,8 +60,21 @@ async function generate(systemInstruction, history, opts = {}) {
   }
 
   const json = JSON.parse(text);
-  const out = json.content && json.content.map((c) => c.text || '').join('');
-  if (!out) throw new Error('Anthropic returned no usable content.');
+  // Only take text blocks — thinking blocks have no .text and would otherwise
+  // silently contribute empty strings.
+  const out =
+    json.content &&
+    json.content
+      .filter((c) => c.type === 'text' || typeof c.text === 'string')
+      .map((c) => c.text || '')
+      .join('');
+  if (!out) {
+    throw new Error(
+      `Anthropic returned no usable content (stop_reason: ${json.stop_reason || 'unknown'}${
+        json.usage ? `, output_tokens: ${json.usage.output_tokens}` : ''
+      }). If stop_reason is max_tokens, raise the output budget.`
+    );
+  }
   return out;
 }
 
