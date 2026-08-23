@@ -31,7 +31,9 @@ async function loadPositions() {
           </div>
           ${p.thesis ? `<div class="dim" style="margin-top:8px;font-size:13px;">${escapeHtml(p.thesis)}</div>` : ''}
           ${zone ? renderZoneBar(p, zone) : `<div class="dim" style="font-size:12px;margin-top:8px;">Set a stop + target to see the zone bar.</div>`}
+          <div id="review-${p.id}" class="dim" style="margin-top:10px;font-size:12px;"></div>
           <div style="margin-top:10px;">
+            <button class="btn" onclick="runReview('${p.id}')">Council review</button>
             <button class="btn secondary" onclick="editPosition('${p.id}')">Edit</button>
             <button class="btn danger" onclick="deletePosition('${p.id}')">Close / Delete</button>
           </div>
@@ -111,13 +113,70 @@ async function editPosition(id) {
   }
 }
 
+function thesisBadge(status) {
+  if (status === 'INTACT') return '<span class="badge buy">THESIS INTACT</span>';
+  if (status === 'WEAKENING') return '<span class="badge watch">THESIS WEAKENING</span>';
+  if (status === 'BROKEN') return '<span class="badge avoid">THESIS BROKEN</span>';
+  return '';
+}
+
+function renderReview(r) {
+  const v = r.verdict || {};
+  return `
+    <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;">
+      <div>${thesisBadge(v.thesisStatus)} <span class="dim">${escapeHtml(v.verdict || '')}${
+    v.conviction != null ? ` · conviction ${v.conviction}/10` : ''
+  } · ${r.trigger}${r.revisedAfterCatfish ? ' · revised after opposition' : ''}</span></div>
+      ${v.headline ? `<div style="margin-top:6px;font-size:13px;color:var(--text);">${escapeHtml(v.headline)}</div>` : ''}
+      ${v.whatChangedSinceEntry ? `<div style="margin-top:4px;"><strong>What changed:</strong> ${escapeHtml(v.whatChangedSinceEntry)}</div>` : ''}
+      ${r.eventReason ? `<div style="margin-top:4px;">Triggered by: ${escapeHtml(r.eventReason)}</div>` : ''}
+      <details style="margin-top:6px;">
+        <summary style="cursor:pointer;font-size:11px;">full Council debate</summary>
+        <pre style="font-size:11px;white-space:pre-wrap;overflow-x:auto;">${escapeHtml(
+          JSON.stringify({ verdict: v, seats: r.seats, catfish: r.catfish }, null, 2)
+        )}</pre>
+      </details>
+      <div class="dim" style="font-size:11px;margin-top:6px;">${new Date(r.reviewedAt).toLocaleString()}</div>
+    </div>`;
+}
+
+async function loadReviews() {
+  try {
+    const reviews = await Api.get('/api/positions/reviews');
+    const latestByPosition = {};
+    for (const r of reviews) {
+      if (!latestByPosition[r.positionId]) latestByPosition[r.positionId] = r;
+    }
+    Object.entries(latestByPosition).forEach(([positionId, r]) => {
+      const el = document.getElementById(`review-${positionId}`);
+      if (el) el.innerHTML = renderReview(r);
+    });
+  } catch (err) {
+    console.error('Could not load position reviews:', err.message);
+  }
+}
+
+async function runReview(id) {
+  const el = document.getElementById(`review-${id}`);
+  if (el) el.innerHTML = '<em>Convening the Council — six seats plus opposition, this takes a minute…</em>';
+  try {
+    const review = await Api.post(`/api/positions/${id}/review`, {});
+    if (el) el.innerHTML = renderReview(review);
+    showToast(`${review.ticker}: thesis ${review.verdict ? review.verdict.thesisStatus : 'reviewed'}`);
+  } catch (err) {
+    if (el) el.innerHTML = `<span class="neg">${escapeHtml(err.message)}</span>`;
+    showToast(err.message, 'error');
+  }
+}
+
 function escapeHtml(str) {
   const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = str == null ? '' : String(str);
   return div.innerHTML;
 }
 
 (async function init() {
   await syncContextFromServer();
-  loadPositions();
+  await loadPositions();
+  loadReviews();
 })();

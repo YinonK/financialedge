@@ -543,7 +543,7 @@ async function convene(situation, opts = {}) {
 
   // --- CFO draft synthesis (with failover if the chair provider is down) ---
   const chairSystem = `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${roles.CHAIR_ROLE.title} (chair).`;
-  const chairPrompt = roles.buildChairPrompt(situationWithReflection, seats);
+  const chairPrompt = roles.buildChairPrompt(situationWithReflection, seats, opts.extraChairFields);
   let verdict = null;
   try {
     const merged = await chairGenerate(chairSystem, [{ role: 'user', content: chairPrompt }], {
@@ -600,7 +600,12 @@ async function convene(situation, opts = {}) {
               [
                 {
                   role: 'user',
-                  content: roles.buildChairRevisionPrompt(situationWithReflection, verdict, parsedCatfish),
+                  content: roles.buildChairRevisionPrompt(
+                    situationWithReflection,
+                    verdict,
+                    parsedCatfish,
+                    opts.extraChairFields
+                  ),
                 },
               ],
               { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }

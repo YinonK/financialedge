@@ -34,6 +34,26 @@
     </div>
 
     <div class="card">
+      <h2>Settings</h2>
+      <p class="subtitle" style="margin-bottom:14px;">How often the Council re-underwrites your open positions. Event-triggered reviews (new chatter on a held name, a level break) always fire regardless of this.</p>
+      <div class="field-row" style="align-items:flex-end;">
+        <div class="field" style="max-width:280px;">
+          <label>Scheduled position review cadence</label>
+          <select id="f-cadence">
+            <option value="1">Every day</option>
+            <option value="3">Every 3 days (recommended)</option>
+            <option value="7">Weekly</option>
+            <option value="0">Off — event-triggered only</option>
+          </select>
+        </div>
+        <div class="field" style="max-width:160px;">
+          <button class="btn" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+      <div id="settingsNote" class="dim" style="font-size:12px;"></div>
+    </div>
+
+    <div class="card">
       <h2>Brain Operations</h2>
       <p class="subtitle" style="margin-bottom:14px;">Autonomous pieces running in the background — watchdog, Telegram delivery, channel ingestion.</p>
       <div id="opsStatus" class="empty-state">Loading…</div>

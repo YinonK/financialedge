@@ -60,6 +60,16 @@ const DEFAULT_CONTEXT = {
   telegramIngest: {
     lastMessageId: {}, // { [channelHandle]: messageId } — checkpoint so we never re-ingest the same message
   },
+  positionReviews: {
+    history: [], // { positionId, ticker, trigger, verdict, thesisStatus, ... }
+    lastReviewedAt: {}, // { [positionId]: ISO } — lets one daily cron serve any cadence
+    seenSignalIds: {}, // { [positionId]: [signalId] } — so an event fires once, not every tick
+  },
+  settings: {
+    // How often open positions get a scheduled Council re-underwriting.
+    // 0 disables scheduled reviews (event-triggered ones still fire).
+    positionReviewCadenceDays: 3,
+  },
 };
 
 function ensureFile() {

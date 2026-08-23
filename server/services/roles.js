@@ -357,7 +357,17 @@ Respond ONLY with valid JSON matching this schema exactly. No markdown fences, n
 ${role.schema}`;
 }
 
-function buildChairPrompt(situation, roleOutputs) {
+/**
+ * Appends use-case-specific fields to the chair's schema. The Portfolio
+ * Council Review needs a thesis status the standard verdict doesn't carry;
+ * rather than fork the chair role, callers extend it.
+ */
+function withExtraFields(schema, extraFields) {
+  if (!extraFields) return schema;
+  return schema.replace(/\}$/, `,\n${extraFields}\n}`);
+}
+
+function buildChairPrompt(situation, roleOutputs, extraFields) {
   const transcript = roleOutputs
     .map((r) => `--- ${r.title} (${r.providerLabel}) ---\n${JSON.stringify(r.output, null, 2)}`)
     .join('\n\n');
@@ -376,7 +386,7 @@ ${transcript}
 ${missing.length ? `\nNOTE: these seats failed to report and are missing from the transcript: ${missing.join(', ')}. Account for the gap — do not pretend they agreed.` : ''}
 
 Respond ONLY with valid JSON matching this schema exactly. No markdown fences, no prose outside the JSON:
-${CHAIR_ROLE.schema}`;
+${withExtraFields(CHAIR_ROLE.schema, extraFields)}`;
 }
 
 function buildCatfishPrompt(situation, roleOutputs, draftVerdict) {
@@ -404,7 +414,7 @@ ${CATFISH_ROLE.schema}`;
  * objection substantively — either revise, or state plainly why the objection
  * is rejected. "Considered and dismissed" without reasoning is not acceptable.
  */
-function buildChairRevisionPrompt(situation, draftVerdict, catfishOutput) {
+function buildChairRevisionPrompt(situation, draftVerdict, catfishOutput, extraFields) {
   return `${CHAIR_ROLE.mandate}
 
 You issued a draft verdict. The Catfish seat — whose assigned duty is mandatory opposition — has raised a substantive objection and you are required to respond to it before the verdict stands.
@@ -429,7 +439,7 @@ Add these two fields to your output alongside the normal schema:
   "catfishResponse": string        // how you addressed it, or why you rejected it
 
 Respond ONLY with valid JSON matching this schema exactly (plus the two fields above). No markdown fences, no prose outside the JSON:
-${CHAIR_ROLE.schema}`;
+${withExtraFields(CHAIR_ROLE.schema, extraFields)}`;
 }
 
 module.exports = {

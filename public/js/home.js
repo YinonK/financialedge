@@ -128,6 +128,33 @@ async function loadOpsStatus() {
   }
 }
 
+async function loadSettings() {
+  try {
+    const s = await Api.get('/api/settings');
+    const sel = document.getElementById('f-cadence');
+    if (sel) sel.value = String(s.positionReviewCadenceDays);
+  } catch (err) {
+    const note = document.getElementById('settingsNote');
+    if (note) note.textContent = `Couldn't load settings: ${err.message}`;
+  }
+}
+
+async function saveSettings() {
+  const note = document.getElementById('settingsNote');
+  try {
+    const value = document.getElementById('f-cadence').value;
+    const s = await Api.put('/api/settings', { positionReviewCadenceDays: Number(value) });
+    note.textContent =
+      s.positionReviewCadenceDays === 0
+        ? 'Scheduled reviews off. Event-triggered reviews still run.'
+        : `Saved — positions get re-underwritten every ${s.positionReviewCadenceDays} day(s). No cron change needed.`;
+    showToast('Settings saved');
+  } catch (err) {
+    note.textContent = err.message;
+    showToast(err.message, 'error');
+  }
+}
+
 function statusPill(configured) {
   return configured ? '<span class="pos">● configured</span>' : '<span class="dim">○ not configured</span>';
 }
@@ -144,4 +171,5 @@ function escapeHtml(str) {
   loadPortfolioSnapshot();
   loadIndicators();
   loadOpsStatus();
+  loadSettings();
 })();

@@ -11,7 +11,7 @@
  * Render free-tier dyno — see README for the exact cron setup.
  */
 
-const { getQuote } = require('./yahooFinance');
+const { getQuote, getTechnicals } = require('./yahooFinance');
 const { computeZone } = require('./riskPortfolio');
 
 /**
@@ -91,4 +91,82 @@ async function checkPositions(positions) {
   return flags;
 }
 
-module.exports = { checkPositions, isUsMarketHours };
+/**
+ * Detects material events for HELD positions — the trigger for an immediate
+ * Portfolio Council Review rather than waiting for the next scheduled sweep.
+ *
+ * Two detectors today:
+ *   1. A newly-ingested signal mentions a ticker we hold. The channels are
+ *      Yinon's highest-signal source; if they start talking about something
+ *      in the book, that's worth re-underwriting now.
+ *   2. Price breaks a structural level (200 DMA, or a Fibonacci retracement
+ *      level), in either direction — a level break is exactly the kind of
+ *      thesis-relevant change that never trips a stop.
+ *
+ * Signal-driven events are deduped per position via seenSignalIds, so one
+ * post doesn't re-fire a review on every watchdog tick.
+ */
+async function detectMaterialEvents(context, positions) {
+  const events = [];
+  const seen = (context.positionReviews && context.positionReviews.seenSignalIds) || {};
+  const recentCutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+
+  for (const position of positions) {
+    // --- 1. New signal chatter about a name we hold ---
+    const fresh = (context.signals.items || []).filter(
+      (s) =>
+        (s.tickers || []).includes(position.ticker) &&
+        new Date(s.pastedAt).getTime() >= recentCutoff &&
+        !(seen[position.id] || []).includes(s.id)
+    );
+    if (fresh.length) {
+      events.push({
+        positionId: position.id,
+        ticker: position.ticker,
+        type: 'new_signal',
+        reason: `${fresh.length} new signal${fresh.length === 1 ? '' : 's'} mentioning ${position.ticker} arrived from your channels (source${
+          fresh.length === 1 ? '' : 's'
+        }: ${[...new Set(fresh.map((s) => s.source))].join(', ')})`,
+        signalIds: fresh.map((s) => s.id),
+      });
+      continue; // one event per position per tick is enough to trigger a review
+    }
+
+    // --- 2. Structural level break ---
+    try {
+      const tech = await getTechnicals(position.ticker);
+      const price = tech.lastClose;
+      const levels = [];
+      if (tech.dma200 != null) levels.push({ name: '200 DMA', value: tech.dma200 });
+      if (tech.fibonacci && tech.fibonacci.retracements) {
+        const fib = tech.fibonacci.retracements;
+        if (fib['0.618'] != null) levels.push({ name: '0.618 Fib', value: fib['0.618'] });
+        if (fib['0.5'] != null) levels.push({ name: '0.5 Fib', value: fib['0.5'] });
+      }
+
+      // "Just broke" = within 1.5% of the level, so we catch the break rather
+      // than reporting a level crossed weeks ago.
+      const broken = levels.find((l) => {
+        const distPct = Math.abs((price - l.value) / l.value) * 100;
+        return distPct <= 1.5;
+      });
+
+      if (broken) {
+        events.push({
+          positionId: position.id,
+          ticker: position.ticker,
+          type: 'level_break',
+          reason: `${position.ticker} is testing/breaking its ${broken.name} (${broken.value.toFixed(2)}) at ${price.toFixed(
+            2
+          )}`,
+        });
+      }
+    } catch (err) {
+      // No data is not an event. Stay quiet rather than guessing.
+    }
+  }
+
+  return events;
+}
+
+module.exports = { checkPositions, isUsMarketHours, detectMaterialEvents };
