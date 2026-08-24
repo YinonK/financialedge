@@ -75,6 +75,17 @@ async function generate(systemInstruction, history, opts = {}) {
   }
 
   const json = JSON.parse(text);
+
+  if (typeof opts.onUsage === 'function' && json.usage) {
+    // completion_tokens already includes reasoning tokens — they are billed.
+    opts.onUsage({
+      provider: 'openai',
+      model: MODEL,
+      inputTokens: json.usage.prompt_tokens || 0,
+      outputTokens: json.usage.completion_tokens || 0,
+    });
+  }
+
   const choice = json.choices && json.choices[0];
   const message = choice && choice.message;
 

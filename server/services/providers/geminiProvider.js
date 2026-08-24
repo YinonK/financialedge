@@ -52,6 +52,20 @@ async function generate(systemInstruction, history, opts = {}) {
   }
 
   const json = JSON.parse(text);
+
+  // Report real token usage so cost tracking prices actual spend rather than
+  // guessing from string lengths.
+  if (typeof opts.onUsage === 'function' && json.usageMetadata) {
+    opts.onUsage({
+      provider: 'gemini',
+      model: MODEL,
+      inputTokens: json.usageMetadata.promptTokenCount || 0,
+      outputTokens:
+        (json.usageMetadata.candidatesTokenCount || 0) +
+        (json.usageMetadata.thoughtsTokenCount || 0),
+    });
+  }
+
   const candidate = json.candidates && json.candidates[0];
   const parts = candidate && candidate.content && candidate.content.parts;
   // Skip "thought" parts thinking models sometimes include alongside the answer.

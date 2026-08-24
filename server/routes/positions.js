@@ -6,6 +6,8 @@ const { readContext, writeContext } = require('../lib/store');
 const { requireCronKey } = require('../lib/cronAuth');
 const { reviewPosition, positionsDueForReview } = require('../services/positionReview');
 const { sendMessage } = require('../services/telegram');
+const costTracker = require('../services/costTracker');
+const { recordAnalysis } = require('../services/analysisStore');
 
 const router = express.Router();
 
@@ -31,7 +33,11 @@ function statusEmoji(status) {
 function formatAlert(review) {
   const v = review.verdict || {};
   const base = appBaseUrl();
-  const link = base ? `\n\nFull Council debate: ${base}/portfolio.html` : '';
+  const link = base
+    ? review.analysisId
+      ? `\n\nFull Council debate: ${base}/analyses.html?id=${review.analysisId}`
+      : `\n\nFull Council debate: ${base}/analyses.html`
+    : '';
   const changed = v.whatChangedSinceEntry ? `\nWhat changed: ${v.whatChangedSinceEntry}` : '';
   const revised = review.revisedAfterCatfish ? '\n(verdict revised after the Catfish challenged it)' : '';
 
@@ -46,7 +52,26 @@ ${v.keyTakeaway || ''}${revised}${link}`;
 }
 
 function recordReview(context, review) {
+  // Also write into the unified analysis store so position reviews show up in
+  // the browsable history and feed future reflection on this ticker.
+  const rec = recordAnalysis({
+    ticker: review.ticker,
+    kind: 'position_review',
+    trigger: review.trigger,
+    verdict: review.verdict,
+    seats: review.seats,
+    catfish: review.catfish,
+    revisedAfterCatfish: review.revisedAfterCatfish,
+    missingSeats: review.missingSeats,
+    providersUsed: review.providersUsed,
+    errors: review.errors,
+    cost: review.cost,
+    extraContext: { positionId: review.positionId, snapshot: review.snapshot, eventReason: review.eventReason },
+  });
+  review.analysisId = rec ? rec.id : null;
+
   context.positionReviews.history.push({
+    analysisId: review.analysisId,
     id: crypto.randomUUID(),
     positionId: review.positionId,
     ticker: review.ticker,
@@ -132,6 +157,13 @@ router.post('/review-due', async (req, res) => {
         console.error(`[positions] review failed for ${position.ticker}:`, err.message);
         results.push({ ticker: position.ticker, error: err.message });
       }
+    }
+
+    try {
+      const warning = costTracker.maybeBudgetWarning();
+      if (warning) await sendMessage(warning.message);
+    } catch (err) {
+      console.error('[budget] warning check failed:', err.message);
     }
 
     res.json({

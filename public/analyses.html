@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FinancialEdge — Analyses</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main">
+    <h1>Analyses</h1>
+    <p class="subtitle">Every Council debate, saved. Including the ones that never became a trade — that is what lets the Brain learn.</p>
+
+    <div id="permalink"></div>
+
+    <div class="card" id="filterCard">
+      <div class="field-row" style="align-items:flex-end;">
+        <div class="field"><label>Ticker</label><input id="f-ticker" placeholder="all" /></div>
+        <div class="field"><label>Type</label>
+          <select id="f-kind">
+            <option value="">All types</option>
+            <option value="research">Research</option>
+            <option value="opportunity">Opportunity hunt</option>
+            <option value="position_review">Position review</option>
+            <option value="convergence">Signal convergence</option>
+          </select>
+        </div>
+        <div class="field"><label>Verdict</label>
+          <select id="f-verdict">
+            <option value="">Any</option>
+            <option value="BUY">BUY</option>
+            <option value="WATCH">WATCH</option>
+            <option value="AVOID">AVOID</option>
+          </select>
+        </div>
+        <div class="field" style="max-width:140px;"><button class="btn" onclick="loadList()">Filter</button></div>
+      </div>
+    </div>
+
+    <div class="card" id="timelineCard" style="display:none;">
+      <h2>How our view changed</h2>
+      <div id="timeline"></div>
+    </div>
+
+    <div class="card">
+      <h2>History</h2>
+      <div id="list" class="empty-state">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/analyses.js"></script>
+</body>
+</html>

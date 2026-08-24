@@ -8,7 +8,9 @@ const NAV_ITEMS = [
   { href: '/research.html', label: 'Research' },
   { href: '/signals.html', label: 'Signals' },
   { href: '/journal.html', label: 'Journal' },
+  { href: '/analyses.html', label: 'Analyses' },
   { href: '/brain.html', label: 'Brain Chat' },
+  { href: '/settings.html', label: 'Settings' },
 ];
 
 function renderSidebar(activeHref) {

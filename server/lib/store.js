@@ -65,10 +65,44 @@ const DEFAULT_CONTEXT = {
     lastReviewedAt: {}, // { [positionId]: ISO } — lets one daily cron serve any cadence
     seenSignalIds: {}, // { [positionId]: [signalId] } — so an event fires once, not every tick
   },
+  analyses: {
+    // Every Council run, whatever triggered it — research, convergence,
+    // opportunity hunt, position review. Full transcript, so the Brain can
+    // learn from looks that never became trades.
+    history: [],
+  },
+  costs: {
+    months: {}, // { 'YYYY-MM': { totalUsd, runs, calls, byProvider } }
+    recentRuns: [], // { ts, label, totalUsd, calls, byProvider }
+    lastWarnedOn: null, // YYYY-MM-DD — one budget warning per day, max
+  },
   settings: {
     // How often open positions get a scheduled Council re-underwriting.
     // 0 disables scheduled reviews (event-triggered ones still fire).
     positionReviewCadenceDays: 3,
+
+    // Soft monthly budget. Nothing is auto-disabled at the ceiling — Yinon
+    // gets told and decides.
+    budgetCeilingUsd: 30,
+    budgetWarnFraction: 0.8,
+
+    // Opportunity hunt
+    opportunityHuntCandidates: 3,
+    opportunityHuntCadenceDays: 1,
+
+    // Which paths convene the full role-based Council. All default true —
+    // depth is the point; these exist so Yinon can dial back if he wants,
+    // not so the system quietly saves money.
+    fullCouncilPaths: {
+      research: true,
+      opportunityHunt: true,
+      convergence: true,
+      positionReview: true,
+    },
+
+    // Per-provider or per-model $/1M-token overrides, e.g. { "anthropic": { "input": 2, "output": 10 } }.
+    // Lets Yinon correct pricing from the invoice without a code change.
+    pricingOverrides: {},
   },
 };
 

@@ -25,6 +25,7 @@
 
 const registry = require('./providers');
 const roles = require('./roles');
+const costTracker = require('./costTracker');
 
 const ALL_PROVIDERS = registry.all();
 
@@ -496,6 +497,11 @@ async function convene(situation, opts = {}) {
   const errors = [];
   const assignments = roles.assignRoles(providers, opts.roleIds);
 
+  // Meter every model call in this run so cost is attributed to the run,
+  // priced from real reported token usage rather than guessed.
+  const meter = costTracker.createRunMeter(opts.settings);
+  const withMeter = (o) => ({ ...o, onUsage: meter.record });
+
   // Reflection: what we said about this name before and how it played out,
   // plus any calibration lesson the track record actually supports. Free —
   // it's context, not an extra model call.
@@ -510,7 +516,7 @@ async function convene(situation, opts = {}) {
         provider,
         `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${role.title}.`,
         [{ role: 'user', content: roles.buildRolePrompt(role, situationWithReflection) }],
-        { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
+        withMeter({ json: true, maxOutputTokens: opts.maxOutputTokens || 8192 })
       )
     )
   );
@@ -546,10 +552,11 @@ async function convene(situation, opts = {}) {
   const chairPrompt = roles.buildChairPrompt(situationWithReflection, seats, opts.extraChairFields);
   let verdict = null;
   try {
-    const merged = await chairGenerate(chairSystem, [{ role: 'user', content: chairPrompt }], {
-      json: true,
-      maxOutputTokens: opts.maxOutputTokens || 8192,
-    });
+    const merged = await chairGenerate(
+      chairSystem,
+      [{ role: 'user', content: chairPrompt }],
+      withMeter({ json: true, maxOutputTokens: opts.maxOutputTokens || 8192 })
+    );
     verdict = tryParse(merged);
   } catch (err) {
     errors.push(`CFO synthesis failed: ${err.message}`);
@@ -578,7 +585,7 @@ async function convene(situation, opts = {}) {
         catfishProvider,
         `${roles.SHARED_CONTEXT}\n\nYour seat on the Council: ${roles.CATFISH_ROLE.title}.`,
         [{ role: 'user', content: roles.buildCatfishPrompt(situationWithReflection, seats, verdict) }],
-        { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
+        withMeter({ json: true, maxOutputTokens: opts.maxOutputTokens || 8192 })
       );
       const parsedCatfish = tryParse(catfishRaw);
       if (!parsedCatfish) {
@@ -608,7 +615,7 @@ async function convene(situation, opts = {}) {
                   ),
                 },
               ],
-              { json: true, maxOutputTokens: opts.maxOutputTokens || 8192 }
+              withMeter({ json: true, maxOutputTokens: opts.maxOutputTokens || 8192 })
             );
             const revisedVerdict = tryParse(revisedRaw);
             if (revisedVerdict) {
@@ -634,9 +641,17 @@ async function convene(situation, opts = {}) {
     .filter((r) => !seats.some((s) => s.roleId === r.id))
     .map((r) => r.title);
 
+  const cost = meter.summary();
+  try {
+    costTracker.commitRunCost(cost, opts.costLabel || 'council run');
+  } catch (err) {
+    console.error('[council] failed to record run cost:', err.message);
+  }
+
   return {
     ok: Boolean(verdict),
     verdict,
+    cost,
     seats,
     catfish,
     revisedAfterCatfish: revised,

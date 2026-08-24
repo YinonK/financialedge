@@ -187,6 +187,8 @@ Data marked unavailable has NO feed — reason around the gap, never invent numb
 
   const result = await council.conveneWithMemory(situation, context, position.ticker, {
     extraChairFields: REVIEW_CHAIR_FIELDS,
+    settings: context.settings,
+    costLabel: `position review (${position.ticker})`,
   });
 
   return {
@@ -204,6 +206,7 @@ Data marked unavailable has NO feed — reason around the gap, never invent numb
     },
     hadEntryThesis: Boolean(entryDecision),
     verdict: result.verdict,
+    cost: result.cost,
     seats: result.seats,
     catfish: result.catfish,
     revisedAfterCatfish: result.revisedAfterCatfish,

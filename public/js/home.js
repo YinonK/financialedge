@@ -128,30 +128,23 @@ async function loadOpsStatus() {
   }
 }
 
-async function loadSettings() {
+async function loadCostSummary() {
+  const el = document.getElementById('costSummary');
+  if (!el) return;
   try {
-    const s = await Api.get('/api/settings');
-    const sel = document.getElementById('f-cadence');
-    if (sel) sel.value = String(s.positionReviewCadenceDays);
+    const c = await Api.get('/api/settings/costs');
+    const over = c.projectedOverCeiling;
+    const color = over ? 'neg' : c.percentOfCeiling > 80 ? 'dim' : 'pos';
+    el.innerHTML = `
+      <table><tbody>
+        <tr><td>Spent this month</td><td><strong>$${c.spentUsd.toFixed(2)}</strong> over ${c.runs} Council run(s)</td></tr>
+        <tr><td>On track for</td><td class="${color}"><strong>$${c.projectedUsd.toFixed(2)}</strong> against your $${c.ceilingUsd} limit</td></tr>
+      </tbody></table>
+      <div class="dim" style="font-size:12px;margin-top:8px;">
+        ${over ? 'At this pace you would pass your limit. Nothing has been switched off — change the limit or the schedules in ' : 'Comfortably inside the limit. You can change any of this in '}<a href="/settings.html">Settings</a>.
+      </div>`;
   } catch (err) {
-    const note = document.getElementById('settingsNote');
-    if (note) note.textContent = `Couldn't load settings: ${err.message}`;
-  }
-}
-
-async function saveSettings() {
-  const note = document.getElementById('settingsNote');
-  try {
-    const value = document.getElementById('f-cadence').value;
-    const s = await Api.put('/api/settings', { positionReviewCadenceDays: Number(value) });
-    note.textContent =
-      s.positionReviewCadenceDays === 0
-        ? 'Scheduled reviews off. Event-triggered reviews still run.'
-        : `Saved — positions get re-underwritten every ${s.positionReviewCadenceDays} day(s). No cron change needed.`;
-    showToast('Settings saved');
-  } catch (err) {
-    note.textContent = err.message;
-    showToast(err.message, 'error');
+    el.innerHTML = `<div class="empty-state">Couldn't load spending: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -171,5 +164,5 @@ function escapeHtml(str) {
   loadPortfolioSnapshot();
   loadIndicators();
   loadOpsStatus();
-  loadSettings();
+  loadCostSummary();
 })();

@@ -135,11 +135,25 @@ async function huntCandidates(context) {
   const pool = new Map();
   for (const { ticker, mentions } of signalCandidates) {
     if (held.has(ticker)) continue;
-    pool.set(ticker, { ticker, mentions, origin: 'channel signals' });
+    pool.set(ticker, {
+      ticker,
+      mentions,
+      origin: 'channel signals',
+      provenance: `${mentions} mention${mentions === 1 ? '' : 's'} in your Telegram channels this week`,
+      hasChannelConviction: true,
+    });
   }
   for (const ticker of trending) {
     if (held.has(ticker) || pool.has(ticker)) continue;
-    pool.set(ticker, { ticker, mentions: 0, origin: 'Yahoo trending' });
+    pool.set(ticker, {
+      ticker,
+      mentions: 0,
+      origin: 'Yahoo trending',
+      // Be explicit: this name has NO backing from Yinon's own sources. It is
+      // here because retail attention spiked, which is weak evidence on its own.
+      provenance: 'no channel conviction — surfaced by retail attention on Yahoo trending, not by your sources',
+      hasChannelConviction: false,
+    });
   }
 
   const shortlist = [...pool.values()].slice(0, MAX_CANDIDATES_SCREENED);
@@ -158,6 +172,8 @@ async function huntCandidates(context) {
     scored.push({
       ticker: c.ticker,
       origin: c.origin,
+      provenance: c.provenance,
+      hasChannelConviction: c.hasChannelConviction,
       mentions: c.mentions,
       score,
       reasons,

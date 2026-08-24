@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>FinancialEdge — Settings</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar" id="sidebar"></div>
+  <div class="main">
+    <h1>Settings</h1>
+    <p class="subtitle">Everything you can change without touching code.</p>
+
+    <div class="card">
+      <h2>Spending this month</h2>
+      <div id="costs" class="empty-state">Loading…</div>
+    </div>
+
+    <div class="card">
+      <h2>Budget</h2>
+      <p class="subtitle" style="margin-bottom:14px;">
+        A soft limit. Nothing gets switched off or made weaker when you reach it — you just get a message so the decision stays yours.
+      </p>
+      <div class="field-row">
+        <div class="field"><label>Monthly limit (USD)</label><input id="s-budget" type="number" min="0" step="1" /></div>
+        <div class="field"><label>Warn me at</label>
+          <select id="s-warn">
+            <option value="0.5">50% of the limit</option>
+            <option value="0.8">80% of the limit</option>
+            <option value="0.9">90% of the limit</option>
+            <option value="1">only when I go over</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>How often things run</h2>
+      <div class="field-row">
+        <div class="field"><label>Re-check open positions every</label>
+          <select id="s-review-cadence">
+            <option value="1">1 day</option>
+            <option value="3">3 days (recommended)</option>
+            <option value="7">7 days</option>
+            <option value="0">never — only when something happens</option>
+          </select>
+        </div>
+        <div class="field"><label>Opportunity hunt: names to review</label>
+          <select id="s-hunt-candidates">
+            <option value="1">1</option><option value="2">2</option>
+            <option value="3">3 (recommended)</option><option value="4">4</option><option value="5">5</option>
+          </select>
+        </div>
+      </div>
+      <p class="dim" style="font-size:12px;">Position reviews check themselves against this setting, so you never need to change the schedule in cron-job.org.</p>
+    </div>
+
+    <div class="card">
+      <h2>Council depth</h2>
+      <p class="subtitle" style="margin-bottom:14px;">
+        Full Council means all seats debate: Bull, Bear, Risk Manager, Fact-Checker, Macro, Sentiment, then the CFO decides and the Catfish attacks the answer.
+        Turning one off makes that job cheaper but noticeably less sharp. All are on by default.
+      </p>
+      <div id="paths"></div>
+    </div>
+
+    <div class="card">
+      <h2>Model prices</h2>
+      <p class="subtitle" style="margin-bottom:14px;">
+        Used only to estimate your spend. If a price here does not match your real invoice, correct it and the estimate gets accurate. Values are US dollars per 1 million tokens.
+      </p>
+      <div id="pricing"></div>
+    </div>
+
+    <div class="card">
+      <button class="btn" onclick="saveAll()">Save settings</button>
+      <button class="btn secondary" onclick="resetCosts()">Reset this month's spend counter</button>
+      <div id="note" class="dim" style="margin-top:10px;font-size:12px;"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/settings.js"></script>
+</body>
+</html>

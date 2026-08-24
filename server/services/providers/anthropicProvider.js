@@ -60,6 +60,16 @@ async function generate(systemInstruction, history, opts = {}) {
   }
 
   const json = JSON.parse(text);
+
+  if (typeof opts.onUsage === 'function' && json.usage) {
+    opts.onUsage({
+      provider: 'anthropic',
+      model: MODEL,
+      inputTokens: json.usage.input_tokens || 0,
+      outputTokens: json.usage.output_tokens || 0,
+    });
+  }
+
   // Only take text blocks — thinking blocks have no .text and would otherwise
   // silently contribute empty strings.
   const out =
