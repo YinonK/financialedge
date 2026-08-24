@@ -22,6 +22,7 @@ const { getValuation } = require('./valuation');
 const { getFlowSentiment } = require('./flowSentiment');
 const { getIndicators } = require('./marketIndicators');
 const { checkCorrelations } = require('./riskPortfolio');
+const { buildProvenanceBlock } = require('./provenance');
 
 const SYSTEM_PERSONA = `You are "The Brain" inside FinancialEdge, Yinon's personal investment intelligence tool.
 
@@ -105,7 +106,38 @@ ${schema}`;
   let brainError = null;
   if (council.anyConfigured()) {
     try {
+      // Signals mentioning this ticker, so the Council can weigh channel
+      // claims against verified market data rather than treating both alike.
+      const relatedSignals = ((context && context.signals && context.signals.items) || [])
+        .filter((sig) => (sig.tickers || []).includes(symbol))
+        .slice(-8);
+
+      const provenanceBlock = buildProvenanceBlock({
+        signals: relatedSignals,
+        dataFeeds: {
+          'Technicals (price, DMA, RSI, MACD, Fibonacci)': technicals.ok
+            ? { source: 'Yahoo Finance chart data, computed by this app' }
+            : { available: false, reason: technicals.error },
+          'Valuation (P/E, PEG, EV/EBITDA, FCF yield)': valuation.ok
+            ? { source: 'Yahoo Finance quoteSummary' }
+            : { available: false, reason: valuation.error },
+          'Flow & sentiment (analyst revisions, short interest, insiders)': flow.ok
+            ? { source: 'Yahoo Finance quoteSummary' }
+            : { available: false, reason: flow.error },
+          'Macro indicators': indicators.ok
+            ? { source: 'Yahoo Finance, CNN Fear & Greed, frankfurter FX' }
+            : { available: false, reason: indicators.error },
+        },
+      });
+
       const situation = `${prompt}
+
+${provenanceBlock}
+${
+  relatedSignals.length
+    ? `\n=== SIGNAL CLAIMS ABOUT ${symbol} (unverified until checked) ===\n${JSON.stringify(relatedSignals, null, 2)}`
+    : ''
+}
 
 The structured Five Lenses data above was gathered server-side from real feeds. Lenses marked available:false or status:'na' have NO data — reason around the gap, never invent numbers to fill it.`;
 

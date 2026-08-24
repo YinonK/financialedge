@@ -20,6 +20,7 @@ const opportunitiesRoutes = require('./routes/opportunities');
 const reviewRoutes = require('./routes/review');
 const telegramWebhookRoutes = require('./routes/telegramWebhook');
 const contextRoutes = require('./routes/context');
+const { initStore, flushStore, storageStatus } = require('./lib/store');
 const council = require('./services/council');
 const telegram = require('./services/telegram');
 const telegramIngest = require('./services/telegramIngest');
@@ -78,6 +79,7 @@ app.get('/api/health', (req, res) => {
     telegramOutboundConfigured: telegram.isConfigured(),
     telegramIngestConfigured: telegramIngest.isConfigured(),
     telegramIngestChannels: telegramIngest.getConfiguredChannels(),
+    storage: storageStatus(),
     time: new Date().toISOString(),
   });
 });
@@ -85,8 +87,21 @@ app.get('/api/health', (req, res) => {
 // Static frontend (vanilla JS, no build step)
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+// Load persisted state BEFORE accepting traffic, so the first request never
+// sees an empty context that later gets overwritten.
+initStore()
+  .catch((err) => console.error('[startup] storage init failed, continuing on local file:', err.message))
+  .then(() => {
 app.listen(PORT, () => {
   console.log(`FinancialEdge server listening on http://localhost:${PORT}`);
+  const st = storageStatus();
+  console.log(
+    `[startup] Storage: ${st.backend}${
+      st.backend === 'file'
+        ? ' — data will NOT survive a Render redeploy. Set SUPABASE_URL + SUPABASE_SERVICE_KEY to fix.'
+        : ' (durable)'
+    }`
+  );
 
   const providers = council.configuredProviders();
   if (!providers.length) {
@@ -118,3 +133,19 @@ app.listen(PORT, () => {
     );
   }
 });
+
+// Flush queued writes before the process dies, so a redeploy doesn't drop
+// the last few seconds of work.
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, async () => {
+    console.log(`[shutdown] ${sig} received — flushing pending writes...`);
+    try {
+      await flushStore();
+      console.log('[shutdown] writes flushed.');
+    } catch (err) {
+      console.error('[shutdown] flush failed:', err.message);
+    }
+    process.exit(0);
+  });
+}
+  });

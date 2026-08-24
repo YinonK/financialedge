@@ -22,6 +22,7 @@ const { getFlowSentiment } = require('./flowSentiment');
 const { getIndicators } = require('./marketIndicators');
 const { computeZone } = require('./riskPortfolio');
 const council = require('./council');
+const { buildProvenanceBlock } = require('./provenance');
 
 // The thesis-status fields the standard CFO verdict doesn't carry.
 const REVIEW_CHAIR_FIELDS = `  "thesisStatus": "INTACT"|"WEAKENING"|"BROKEN",
@@ -177,6 +178,22 @@ Macro indicators: ${
 
 === SIGNALS MENTIONING THIS TICKER (last ${LOOKBACK_SIGNAL_DAYS} days) ===
 ${newSignals.length ? JSON.stringify(newSignals, null, 2) : 'none'}
+
+${buildProvenanceBlock({
+  signals: newSignals,
+  dataFeeds: {
+    'Live price': quote.ok ? { source: 'Yahoo Finance' } : { available: false, reason: quote.error },
+    Technicals: technicals.ok ? { source: 'Yahoo Finance chart data, computed by this app' } : { available: false, reason: technicals.error },
+    Valuation: valuation.ok ? { source: 'Yahoo Finance quoteSummary' } : { available: false, reason: valuation.error },
+    'Flow & sentiment': flow.ok ? { source: 'Yahoo Finance quoteSummary' } : { available: false, reason: flow.error },
+    'Macro indicators': indicators.ok ? { source: 'Yahoo Finance, CNN, frankfurter' } : { available: false, reason: indicators.error },
+  },
+  extraNotes: [
+    entryDecision
+      ? 'The entry thesis above is what Yinon wrote down himself at the time. It is his reasoning, not verified fact.'
+      : 'There is NO recorded entry thesis for this position. Do not reconstruct one — say it is missing.',
+  ],
+})}
 
 === REST OF THE BOOK (correlation context) ===
 ${JSON.stringify((context.portfolio.positions || []).filter((p) => p.id !== position.id).map((p) => p.ticker))}

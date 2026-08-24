@@ -4,11 +4,13 @@ const express = require('express');
 const crypto = require('crypto');
 const { readContext, writeContext } = require('../lib/store');
 const { detectTickers } = require('../lib/tickerDetect');
+const { extractFromMessages } = require('../services/entityExtract');
 const { ingestNewSignals } = require('../services/telegramIngest');
 const { sendMessage } = require('../services/telegram');
 const { requireCronKey } = require('../lib/cronAuth');
 const council = require('../services/council');
-const { SYSTEM_PERSONA } = require('../services/brain');
+const { recordAnalysis } = require('../services/analysisStore');
+const { buildProvenanceBlock } = require('../services/provenance');
 
 const router = express.Router();
 
@@ -46,18 +48,34 @@ router.get('/', (req, res) => {
   res.json(items);
 });
 
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const body = req.body || {};
   if (!body.rawText || !body.rawText.trim()) {
     return res.status(400).json({ error: 'rawText is required' });
   }
   const context = readContext();
+
+  // Full extraction, so a pasted Hebrew article is understood the same way an
+  // ingested Hebrew channel post is.
+  let enrichment = { tickers: detectTickers(body.rawText), entities: [], extractionMethod: 'regex' };
+  try {
+    const out = await extractFromMessages(
+      [{ rawText: body.rawText.trim(), source: body.source || 'manual paste' }],
+      { knownMappings: context.entityCache.mappings }
+    );
+    if (out.enrichments[0]) enrichment = out.enrichments[0];
+    Object.assign(context.entityCache.mappings, out.newMappings);
+  } catch (err) {
+    console.error('[signals] extraction failed, falling back to regex:', err.message);
+  }
+
   const item = {
     id: crypto.randomUUID(),
     pastedAt: new Date().toISOString(),
     rawText: body.rawText.trim(),
-    tickers: detectTickers(body.rawText),
+    tickers: enrichment.tickers || [],
     source: body.source || 'manual paste',
+    parsed: enrichment,
   };
   context.signals.items.push(item);
   writeContext(context);
@@ -102,6 +120,29 @@ router.post('/ingest', async (req, res) => {
     }
 
     if (result.newItems.length) {
+      // Extraction runs BEFORE storage, so Hebrew posts arrive with real
+      // tickers attached instead of an empty array that silently drops them
+      // out of every downstream feature.
+      let extraction = { enrichments: [], llmCalls: 0, newMappings: {} };
+      try {
+        extraction = await extractFromMessages(result.newItems, {
+          knownMappings: context.entityCache.mappings,
+        });
+        Object.assign(context.entityCache.mappings, extraction.newMappings);
+      } catch (err) {
+        console.error('[signals:ingest] extraction failed, keeping regex tickers:', err.message);
+      }
+
+      const unmappedNames = new Set(context.entityCache.unmapped || []);
+      result.newItems.forEach((item, i) => {
+        const e = extraction.enrichments[i];
+        if (!e) return;
+        if (e.tickers && e.tickers.length) item.tickers = e.tickers;
+        item.parsed = e;
+        for (const name of e.unmappedCompanies || []) unmappedNames.add(name);
+      });
+      context.entityCache.unmapped = [...unmappedNames].slice(-200);
+
       context.signals.items.push(...result.newItems);
       context.telegramIngest.lastMessageId = result.updatedCheckpoints;
       writeContext(context);
@@ -116,30 +157,83 @@ router.post('/ingest', async (req, res) => {
         // full Council brainstorms it (independent takes → rebuttals →
         // consensus) rather than giving a one-shot opinion. Never blocks the
         // alert: if the Council is down, the alert still goes out and says so.
-        let councilRead = null;
+        const relatedSignals = context.signals.items
+          .filter((s) => s.tickers.some((t) => convergences.some((c) => c.ticker === t)))
+          .slice(-12);
+
+        let councilResult = null;
+        let councilError = null;
         try {
-          const relatedSignals = context.signals.items
-            .filter((s) => s.tickers.some((t) => convergences.some((c) => c.ticker === t)))
-            .slice(-12);
-          const brainstorm = await council.brainstormSignals(
-            SYSTEM_PERSONA,
-            `New signal convergence just detected across Yinon's followed Telegram channels:\n${convergences
-              .map((c) => `- ${c.ticker}: ${c.count} mentions in ${CONVERGENCE_WINDOW_DAYS}d${c.strongConvergence ? ' (strong)' : ''}`)
-              .join('\n')}\n\nThe underlying posts (note: channels are often Hebrew — read them as-is):\n${JSON.stringify(
-              relatedSignals,
-              null,
-              2
-            )}`
-          );
-          councilRead = brainstorm.text;
+          const situation = `SIGNAL CONVERGENCE — the same name keeps coming up across Yinon's Telegram alpha channels.
+
+Convergences detected:
+${convergences
+  .map((c) => `- ${c.ticker}: ${c.count} mentions in ${CONVERGENCE_WINDOW_DAYS} days${c.strongConvergence ? ' (STRONG)' : ''}`)
+  .join('\n')}
+
+${buildProvenanceBlock({
+  signals: relatedSignals,
+  dataFeeds: {},
+  extraNotes: [
+    'These posts are mostly HEBREW. Company names may appear only in Hebrew. Where a post has a "parsed" field, that is our own extraction of the companies and claims — treat the extraction as our reading, and the rawText as the source of truth.',
+  ],
+})}
+
+=== THE UNDERLYING POSTS ===
+${JSON.stringify(relatedSignals, null, 2)}
+
+Is this convergence worth Yinon's attention, or is it noise? Repetition is not evidence — several posts from one channel is one opinion repeated. Say plainly if that is what this is.`;
+
+          councilResult = await council.convene(situation, {
+            settings: context.settings,
+            costLabel: 'signal convergence',
+          });
         } catch (err) {
-          console.error('[signals:ingest] council brainstorm failed:', err.message);
-          councilRead = `(Council brainstorm failed: ${err.message.slice(0, 200)})`;
+          console.error('[signals:ingest] council failed:', err.message);
+          councilError = err.message;
         }
+
+        let analysisId = null;
+        if (councilResult && councilResult.seats && councilResult.seats.length) {
+          const rec = recordAnalysis({
+            tickers: convergences.map((c) => c.ticker),
+            ticker: convergences[0] ? convergences[0].ticker : null,
+            kind: 'convergence',
+            trigger: 'ingest',
+            verdict: councilResult.verdict,
+            seats: councilResult.seats,
+            catfish: councilResult.catfish,
+            revisedAfterCatfish: councilResult.revisedAfterCatfish,
+            missingSeats: councilResult.missingSeats,
+            providersUsed: councilResult.providersUsed,
+            errors: councilResult.errors,
+            cost: councilResult.cost,
+            extraContext: { convergences, signalCount: relatedSignals.length },
+          });
+          analysisId = rec ? rec.id : null;
+        }
+
+        const v = (councilResult && councilResult.verdict) || {};
+        const base = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
+        const link = base
+          ? analysisId
+            ? `\n\nFull Council debate: ${base}/analyses.html?id=${analysisId}`
+            : `\n\nAll analyses: ${base}/analyses.html`
+          : '';
+
+        const councilRead = councilError
+          ? `(Council unavailable: ${councilError.slice(0, 200)})`
+          : `${v.verdict ? `Verdict: ${v.verdict}${v.conviction != null ? ` (conviction ${v.conviction}/10)` : ''}\n` : ''}${
+              v.headline || ''
+            }\n\n${v.keyTakeaway || ''}${
+              v.councilDisagreements && v.councilDisagreements.toLowerCase() !== 'none'
+                ? `\n\nWhere the Council split: ${v.councilDisagreements}`
+                : ''
+            }`;
 
         const text = `FinancialEdge — new convergence detected:\n\n${convergences
           .map((c) => `• ${c.ticker}: ${c.count} mentions in ${CONVERGENCE_WINDOW_DAYS}d${c.strongConvergence ? ' (strong)' : ''}`)
-          .join('\n')}${councilRead ? `\n\n${councilRead}` : ''}`;
+          .join('\n')}\n\n${councilRead}${link}`;
         await sendMessage(text).catch((err) => console.error('[signals:ingest] alert send failed:', err.message));
       }
     }

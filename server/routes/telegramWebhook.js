@@ -39,11 +39,21 @@ router.post('/', async (req, res) => {
       return;
     }
 
+    // Slash commands first. /help and /status answer instantly from local
+    // state with no model call; /ask just forwards its text to the Brain.
+    // Anything that isn't a command is normal chat, exactly as before.
+    const commandResult = await require('../services/telegramCommands').handleCommand(message.text);
+    if (commandResult.handled && commandResult.reply) {
+      await sendMessage(commandResult.reply);
+      return;
+    }
+    const effectiveText = commandResult.chatMessage || message.text;
+
     const context = readContext();
     const userMsg = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: message.text,
+      content: effectiveText,
       ts: new Date().toISOString(),
       source: 'telegram',
     };

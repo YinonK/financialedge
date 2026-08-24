@@ -1,10 +1,7 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-
-const DATA_DIR = path.join(__dirname, '..', '..', 'data');
-const DATA_FILE = path.join(DATA_DIR, 'context.json');
+const storage = require('./storage');
+const { DATA_FILE } = require('./storage/fileAdapter');
 
 const DEFAULT_CONTEXT = {
   meta: {
@@ -57,6 +54,13 @@ const DEFAULT_CONTEXT = {
   review: {
     history: [], // { id, ts, weekOf, summary, delivery }
   },
+  entityCache: {
+    // Hebrew/other company name -> { ticker, exchange }. Resolved once by the
+    // extractor, reused forever, so a recurring company costs nothing after
+    // the first sighting.
+    mappings: {},
+    unmapped: [], // names we recognised as companies but could NOT map — for manual review
+  },
   telegramIngest: {
     lastMessageId: {}, // { [channelHandle]: messageId } — checkpoint so we never re-ingest the same message
   },
@@ -106,52 +110,35 @@ const DEFAULT_CONTEXT = {
   },
 };
 
-function ensureFile() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(DATA_FILE)) {
-    const now = new Date().toISOString();
-    const initial = JSON.parse(JSON.stringify(DEFAULT_CONTEXT));
-    initial.meta.createdAt = now;
-    initial.meta.updatedAt = now;
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2));
-  }
+
+/**
+ * Public store API — unchanged on purpose.
+ *
+ * Every route calls readContext()/writeContext() synchronously. Those now sit
+ * on top of the storage facade, which keeps the authoritative copy in memory
+ * and persists asynchronously to Supabase (or the local file when Supabase
+ * isn't configured). Nothing downstream had to change.
+ */
+
+async function initStore() {
+  return storage.init(DEFAULT_CONTEXT);
 }
 
 function readContext() {
-  ensureFile();
-  try {
-    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-    // shallow-merge with defaults so new fields introduced later don't crash old files
-    return deepMerge(DEFAULT_CONTEXT, parsed);
-  } catch (err) {
-    console.error('[store] failed to read context.json, returning defaults:', err.message);
-    return JSON.parse(JSON.stringify(DEFAULT_CONTEXT));
-  }
+  return storage.read(DEFAULT_CONTEXT);
 }
 
 function writeContext(context) {
-  ensureFile();
-  context.meta = context.meta || {};
-  context.meta.updatedAt = new Date().toISOString();
-  fs.writeFileSync(DATA_FILE, JSON.stringify(context, null, 2));
-  return context;
+  return storage.write(context);
 }
 
-function deepMerge(base, override) {
-  if (Array.isArray(base) || Array.isArray(override)) {
-    return override !== undefined ? override : base;
-  }
-  if (typeof base === 'object' && base !== null && typeof override === 'object' && override !== null) {
-    const out = { ...base };
-    for (const key of Object.keys(override)) {
-      out[key] = deepMerge(base[key], override[key]);
-    }
-    return out;
-  }
-  return override !== undefined ? override : base;
+/** Await pending durable writes — used by cron routes and on shutdown. */
+function flushStore() {
+  return storage.flush();
 }
 
-module.exports = { readContext, writeContext, DATA_FILE };
+function storageStatus() {
+  return storage.status();
+}
+
+module.exports = { readContext, writeContext, initStore, flushStore, storageStatus, DATA_FILE, DEFAULT_CONTEXT };
