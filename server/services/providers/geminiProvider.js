@@ -12,6 +12,11 @@
 const MODEL = process.env.GEMINI_MODEL || 'gemini-pro-latest';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
+// Reasoning models can genuinely take minutes on a full Council seat, but a
+// hung socket must never stall a run forever (Node's fetch has no default
+// timeout at all).
+const REQUEST_TIMEOUT_MS = 300000;
+
 function isConfigured() {
   return Boolean(process.env.GEMINI_API_KEY);
 }
@@ -23,7 +28,8 @@ async function generate(systemInstruction, history, opts = {}) {
     throw err;
   }
 
-  const url = `${API_BASE}/models/${MODEL}:generateContent?key=${process.env.GEMINI_API_KEY}`;
+  // Key goes in a header, never the URL — URLs leak into logs.
+  const url = `${API_BASE}/models/${MODEL}:generateContent`;
 
   const body = {
     systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -42,7 +48,8 @@ async function generate(systemInstruction, history, opts = {}) {
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
     body: JSON.stringify(body),
   });
 

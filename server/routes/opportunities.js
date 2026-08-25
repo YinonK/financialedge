@@ -2,8 +2,8 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
-const { requireCronKey } = require('../lib/cronAuth');
+const { readContext, updateContext } = require('../lib/store');
+const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
 const { huntCandidates } = require('../services/opportunityHunt');
 const council = require('../services/council');
 const { sendMessage } = require('../services/telegram');
@@ -37,6 +37,20 @@ router.post('/', async (req, res) => {
 
   try {
     const context = readContext();
+
+    // opportunityHuntCadenceDays was stored and editable but read by nothing.
+    // Same self-check pattern as position reviews: the cron fires daily, the
+    // route decides whether a hunt is actually due. 0 disables the hunt.
+    const cadenceDays =
+      context.settings.opportunityHuntCadenceDays != null ? Number(context.settings.opportunityHuntCadenceDays) : 1;
+    if (!cadenceDays || cadenceDays <= 0) {
+      return res.json({ skipped: true, reason: 'opportunity hunt is disabled (cadence set to 0)' });
+    }
+    const lastHunt = (context.opportunities.history || []).slice(-1)[0];
+    if (lastHunt && Date.now() - new Date(lastHunt.ts).getTime() < cadenceDays * 24 * 60 * 60 * 1000) {
+      return res.json({ skipped: true, reason: `not due yet (cadence: every ${cadenceDays} day(s))` });
+    }
+
     const hunt = await huntCandidates(context);
 
     if (!hunt.candidates.length) {
@@ -48,9 +62,10 @@ router.post('/', async (req, res) => {
         note: hunt.note || 'No candidates passed screening today.',
         delivery: null,
       };
-      context.opportunities.history.push(entry);
-      if (context.opportunities.history.length > 90) context.opportunities.history.shift();
-      writeContext(context);
+      updateContext((ctx) => {
+        ctx.opportunities.history.push(entry);
+        if (ctx.opportunities.history.length > 90) ctx.opportunities.history.shift();
+      });
       return res.json(entry);
     }
 
@@ -62,8 +77,11 @@ router.post('/', async (req, res) => {
     // when there is genuinely nothing to fact-check — i.e. every candidate came
     // from Yahoo trending with no channel text containing claims. That is the
     // seat correctly having no work, not a seat being dropped to save money.
+    const depth = council.depthForPath(context.settings, 'opportunityHunt');
     const anyChannelClaims = hunt.candidates.some((c) => c.hasChannelConviction);
-    const roleIds = anyChannelClaims
+    const roleIds = depth.light
+      ? depth.roleIds
+      : anyChannelClaims
       ? undefined // all seats
       : ['bull', 'bear', 'riskManager', 'macroAnalyst', 'sentimentAnalyst'];
 
@@ -94,6 +112,7 @@ The CFO's verdict should cover the shortlist as a whole and name which single ca
 
       councilResult = await council.convene(situation, {
         roleIds,
+        catfish: depth.catfish,
         settings: context.settings,
         costLabel: 'opportunity hunt',
       });
@@ -168,14 +187,19 @@ ${v.verdict ? `Council verdict: ${v.verdict}${v.conviction != null ? ` (convicti
       cost: councilResult ? councilResult.cost : null,
       delivery,
     };
-    context.opportunities.history.push(entry);
-    if (context.opportunities.history.length > 90) context.opportunities.history.shift();
-    writeContext(context);
+    // Applied to the live context — the Council run above took minutes, and
+    // writing back the pre-run snapshot used to erase everything ingested
+    // meanwhile (including the analysis recorded seconds ago).
+    updateContext((ctx) => {
+      ctx.opportunities.history.push(entry);
+      if (ctx.opportunities.history.length > 90) ctx.opportunities.history.shift();
+    });
 
     await notifyBudgetIfNeeded();
 
     res.json(entry);
   } catch (err) {
+    await reportCronFailure('opportunity hunt', err);
     res.status(500).json({ error: err.message });
   }
 });

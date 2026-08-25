@@ -112,6 +112,24 @@ function read(defaultContext) {
   return clone(cache);
 }
 
+/**
+ * The safe way to change state. `fn` receives the LIVE current context (a
+ * working copy re-read at apply time) and mutates it (or returns a replacement).
+ *
+ * Why this exists: `read()` hands out a snapshot, and any route that held that
+ * snapshot across an `await` and then called `write(snapshot)` silently erased
+ * every change other code made in between — event reviews re-fired every tick,
+ * recorded analyses vanished until restart, ingest checkpoints rolled back.
+ * The write queue serialises persistence, but nothing protected the
+ * read-modify-write cycle itself. mutate() closes that gap: do the slow work
+ * first, then apply only your own changes to whatever the context is NOW.
+ */
+function mutate(fn, defaultContext) {
+  const working = read(defaultContext);
+  const result = fn(working);
+  return write(result === undefined ? working : result);
+}
+
 function write(context) {
   context.meta = context.meta || {};
   context.meta.updatedAt = new Date().toISOString();
@@ -167,4 +185,4 @@ function status() {
   };
 }
 
-module.exports = { init, read, write, flush, status };
+module.exports = { init, read, write, mutate, flush, status };

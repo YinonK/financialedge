@@ -8,6 +8,10 @@
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 
+// A hung socket must never stall a Council run forever (Node's fetch has no
+// default timeout). Generous, because a full seat genuinely thinks a while.
+const REQUEST_TIMEOUT_MS = 300000;
+
 function isConfigured() {
   return Boolean(process.env.ANTHROPIC_API_KEY);
 }
@@ -46,6 +50,7 @@ async function generate(systemInstruction, history, opts = {}) {
 
   const res = await fetch(API_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       'Content-Type': 'application/json',
       'x-api-key': process.env.ANTHROPIC_API_KEY,

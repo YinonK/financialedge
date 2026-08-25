@@ -31,7 +31,8 @@
  */
 
 const council = require('./council');
-const { detectTickers } = require('../lib/tickerDetect');
+const costTracker = require('./costTracker');
+const { detectCashtags } = require('../lib/tickerDetect');
 
 const BATCH_SIZE = 10;
 const HEBREW_RE = /[֐-׿]/;
@@ -99,9 +100,17 @@ const EXTRACTION_SCHEMA = `{
 }`;
 
 function buildPrompt(batch, knownMappings) {
-  const cacheHint = Object.keys(knownMappings).length
+  // Only send cached mappings whose name actually appears in this batch —
+  // dumping the ENTIRE cache into every prompt grows without bound over
+  // months of ingestion and buys nothing for names not in these messages.
+  const batchText = batch.map((m) => m.rawText || '').join('\n');
+  const relevant = {};
+  for (const [name, mapping] of Object.entries(knownMappings)) {
+    if (batchText.includes(name)) relevant[name] = mapping;
+  }
+  const cacheHint = Object.keys(relevant).length
     ? `\n\nCompany names we have already mapped before (reuse these, do not re-derive):\n${JSON.stringify(
-        knownMappings,
+        relevant,
         null,
         2
       )}`
@@ -157,25 +166,28 @@ async function extractFromMessages(messages, options = {}) {
   const knownMappings = options.knownMappings || {};
   const results = new Array(messages.length).fill(null);
 
-  // --- Fast path: pure-Latin messages where regex already finds tickers ---
+  // --- Fast path: messages with explicit $TICKER cashtags only ---
+  // The fast path used to accept ANY bare 1-5 letter caps word ("NEXT WEEK
+  // EARNINGS" → tickers NEXT, WEEK) and label it high-confidence — junk that
+  // flowed straight into convergence and could trigger paid Council runs.
+  // Only a cashtag is trustworthy enough to skip the LLM.
   const needsLlm = [];
   messages.forEach((m, i) => {
     const text = m.rawText || '';
-    const regexTickers = detectTickers(text);
+    const cashtags = detectCashtags(text);
     const hebrew = hasNonLatinScript(text);
 
-    if (!hebrew && regexTickers.length) {
-      // Plain English with explicit symbols — no model call needed.
+    if (!hebrew && cashtags.length) {
       results[i] = {
-        tickers: regexTickers,
-        entities: regexTickers.map((t) => ({
-          nameAsWritten: t,
+        tickers: cashtags,
+        entities: cashtags.map((t) => ({
+          nameAsWritten: `$${t}`,
           nameEnglish: t,
           ticker: t,
           exchange: null,
           confidence: 'high',
           needsManualMapping: false,
-          reasoning: 'explicit ticker symbol in the text',
+          reasoning: 'explicit $cashtag in the text',
         })),
         extractionMethod: 'regex',
         language: 'en',
@@ -183,7 +195,7 @@ async function extractFromMessages(messages, options = {}) {
       return;
     }
     if (!looksFinancial(text)) {
-      results[i] = { tickers: regexTickers, entities: [], extractionMethod: 'skipped_non_financial', language: hebrew ? 'he' : 'en' };
+      results[i] = { tickers: cashtags, entities: [], extractionMethod: 'skipped_non_financial', language: hebrew ? 'he' : 'en' };
       return;
     }
     needsLlm.push(i);
@@ -195,7 +207,7 @@ async function extractFromMessages(messages, options = {}) {
     // Degrade honestly rather than silently: keep regex output, flag the gap.
     for (const i of needsLlm) {
       results[i] = {
-        tickers: detectTickers(messages[i].rawText || ''),
+        tickers: detectCashtags(messages[i].rawText || ''),
         entities: [],
         extractionMethod: 'regex_only_no_ai',
         note: 'No AI provider configured, so Hebrew company names could not be identified.',
@@ -213,10 +225,14 @@ async function extractFromMessages(messages, options = {}) {
     const batch = idxBatch.map((i) => messages[i]);
 
     try {
-      const raw = await council.chairGenerate(
-        'You extract structured financial information from multilingual messages, especially Hebrew. You are precise and you never guess a ticker symbol.',
-        [{ role: 'user', content: buildPrompt(batch, knownMappings) }],
-        { json: true, maxOutputTokens: 16384 }
+      // Metered: this path runs on every 15-minute ingest and used to be
+      // invisible to cost tracking.
+      const raw = await costTracker.metered('entity extraction', options.settings, (onUsage) =>
+        council.chairGenerate(
+          'You extract structured financial information from multilingual messages, especially Hebrew. You are precise and you never guess a ticker symbol.',
+          [{ role: 'user', content: buildPrompt(batch, knownMappings) }],
+          { json: true, maxOutputTokens: 16384, onUsage }
+        )
       );
       llmCalls++;
       const parsed = tryParse(raw);
@@ -226,7 +242,7 @@ async function extractFromMessages(messages, options = {}) {
         const row = rows.find((r) => r.index === localIdx) || rows[localIdx];
         if (!row) {
           results[globalIdx] = {
-            tickers: detectTickers(messages[globalIdx].rawText || ''),
+            tickers: detectCashtags(messages[globalIdx].rawText || ''),
             entities: [],
             extractionMethod: 'llm_no_row',
           };
@@ -263,7 +279,7 @@ async function extractFromMessages(messages, options = {}) {
       console.error('[entityExtract] batch failed:', err.message);
       for (const i of idxBatch) {
         results[i] = {
-          tickers: detectTickers(messages[i].rawText || ''),
+          tickers: detectCashtags(messages[i].rawText || ''),
           entities: [],
           extractionMethod: 'llm_failed',
           note: `Extraction failed: ${err.message.slice(0, 160)}`,

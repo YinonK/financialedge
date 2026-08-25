@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, writeContext, updateContext } = require('../lib/store');
 const { getQuote } = require('../services/yahooFinance');
 const { getUsdIls } = require('../services/fx');
 const { computeZone } = require('../services/riskPortfolio');
@@ -66,8 +66,7 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', (req, res) => {
-  const context = readContext();
-  if (context.portfolio.positions.length >= MAX_POSITIONS) {
+  if (readContext().portfolio.positions.length >= MAX_POSITIONS) {
     return res.status(400).json({
       error: `Already at the ${MAX_POSITIONS}-position cap. This is a deliberate discipline constraint — close or replace a position first.`,
     });
@@ -88,14 +87,13 @@ router.post('/', (req, res) => {
     thesis: body.thesis || '',
     notes: body.notes || '',
   };
-  context.portfolio.positions.push(position);
-
   // Auto-log the decision so the journal reflects reality without depending
   // on Yinon remembering to write it down. `council` can be passed in from
   // the Research screen to freeze the Council's read at decision time.
   const entry = journalService.createEntry({
     ticker: position.ticker,
-    action: 'BUY',
+    action: position.side === 'short' ? 'SHORT' : 'BUY',
+    side: position.side,
     shares: position.shares,
     price: position.entryPrice,
     stopPrice: position.stopPrice,
@@ -106,65 +104,72 @@ router.post('/', (req, res) => {
     positionId: position.id,
     source: 'portfolio_open',
   });
-  context.journal.entries.push(entry);
 
-  writeContext(context);
+  updateContext((context) => {
+    context.portfolio.positions.push(position);
+    context.journal.entries.push(entry);
+  });
   res.status(201).json({ ...position, journalEntryId: entry.id });
 });
 
 router.put('/:id', (req, res) => {
-  const context = readContext();
-  const idx = context.portfolio.positions.findIndex((p) => p.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'position not found' });
+  let updated = null;
+  updateContext((context) => {
+    const idx = context.portfolio.positions.findIndex((p) => p.id === req.params.id);
+    if (idx === -1) return;
 
-  const updatable = ['ticker', 'side', 'shares', 'entryPrice', 'stopPrice', 'targetPrice', 'entryDate', 'thesis', 'notes'];
-  const body = req.body || {};
-  for (const key of updatable) {
-    if (body[key] !== undefined) {
-      context.portfolio.positions[idx][key] =
-        ['shares', 'entryPrice', 'stopPrice', 'targetPrice'].includes(key) && body[key] !== null
-          ? Number(body[key])
-          : key === 'ticker'
-          ? String(body[key]).toUpperCase()
-          : body[key];
+    const updatable = ['ticker', 'side', 'shares', 'entryPrice', 'stopPrice', 'targetPrice', 'entryDate', 'thesis', 'notes'];
+    const body = req.body || {};
+    for (const key of updatable) {
+      if (body[key] !== undefined) {
+        context.portfolio.positions[idx][key] =
+          ['shares', 'entryPrice', 'stopPrice', 'targetPrice'].includes(key) && body[key] !== null
+            ? Number(body[key])
+            : key === 'ticker'
+            ? String(body[key]).toUpperCase()
+            : body[key];
+      }
     }
-  }
-  writeContext(context);
-  res.json(context.portfolio.positions[idx]);
+    updated = context.portfolio.positions[idx];
+  });
+  if (!updated) return res.status(404).json({ error: 'position not found' });
+  res.json(updated);
 });
 
 router.delete('/:id', async (req, res) => {
-  const context = readContext();
-  const position = context.portfolio.positions.find((p) => p.id === req.params.id);
+  const position = readContext().portfolio.positions.find((p) => p.id === req.params.id);
   if (!position) {
     return res.status(404).json({ error: 'position not found' });
   }
-  context.portfolio.positions = context.portfolio.positions.filter((p) => p.id !== req.params.id);
 
-  // Closing a position reconciles its journal entry. Exit price comes from
-  // the caller if supplied, otherwise the last live quote — never invented.
-  const openEntry = context.journal.entries.find(
-    (e) => e.positionId === position.id && e.status === 'open'
-  );
-  if (openEntry) {
-    let exitPrice = req.query.exitPrice != null ? Number(req.query.exitPrice) : null;
-    if (exitPrice == null) {
-      try {
-        const q = await getQuote(position.ticker);
-        exitPrice = q.price;
-      } catch (err) {
-        exitPrice = null;
-      }
+  // Do the slow part (quote fetch) BEFORE touching state, so the await can't
+  // sit between a read and a write and clobber concurrent changes.
+  let exitPrice = req.query.exitPrice != null ? Number(req.query.exitPrice) : null;
+  if (exitPrice == null) {
+    try {
+      const q = await getQuote(position.ticker);
+      exitPrice = q.price;
+    } catch (err) {
+      exitPrice = null;
     }
-    const idx = context.journal.entries.findIndex((e) => e.id === openEntry.id);
-    context.journal.entries[idx] = journalService.closeEntry(openEntry, {
-      exitPrice,
-      shares: position.shares,
-      whatHappened: req.query.note || '',
-    });
   }
 
-  writeContext(context);
+  updateContext((context) => {
+    context.portfolio.positions = context.portfolio.positions.filter((p) => p.id !== req.params.id);
+
+    // Closing a position reconciles its journal entry. Exit price comes from
+    // the caller if supplied, otherwise the last live quote — never invented.
+    const idx = context.journal.entries.findIndex(
+      (e) => e.positionId === position.id && e.status === 'open'
+    );
+    if (idx !== -1) {
+      context.journal.entries[idx] = journalService.closeEntry(context.journal.entries[idx], {
+        exitPrice,
+        shares: position.shares,
+        whatHappened: req.query.note || '',
+      });
+    }
+  });
   res.status(204).end();
 });
 

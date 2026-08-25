@@ -13,7 +13,7 @@ const HEADERS = {
 };
 
 async function getFearGreed() {
-  const res = await fetch(URL, { headers: HEADERS });
+  const res = await fetch(URL, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
   if (!res.ok) {
     throw new Error(`CNN Fear & Greed fetch failed: HTTP ${res.status}`);
   }

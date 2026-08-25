@@ -20,7 +20,7 @@ async function getFlowSentiment(symbol) {
   const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encoded}?modules=${MODULES}`;
 
   try {
-    const res = await fetch(url, { headers: HEADERS });
+    const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
     const text = await res.text();
     if (!text || !text.trim()) throw new Error('empty response (likely bot-gated)');
     const json = JSON.parse(text);

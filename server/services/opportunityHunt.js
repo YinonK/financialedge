@@ -36,6 +36,7 @@ const BROWSER_HEADERS = {
 async function getTrendingTickers() {
   try {
     const res = await fetch('https://query1.finance.yahoo.com/v1/finance/trending/US?count=15', {
+      signal: AbortSignal.timeout(15000),
       headers: BROWSER_HEADERS,
     });
     const text = await res.text();
@@ -129,6 +130,12 @@ function scoreCandidate(tech, mentions) {
 async function huntCandidates(context) {
   const held = new Set((context.portfolio.positions || []).map((p) => p.ticker));
 
+  // opportunityHuntCandidates (Settings, 1-10) was stored but never read.
+  const toCouncil = Math.min(
+    10,
+    Math.max(1, Number(context.settings && context.settings.opportunityHuntCandidates) || MAX_CANDIDATES_TO_COUNCIL)
+  );
+
   const signalCandidates = tickersFromRecentSignals(context.signals.items || []);
   const trending = await getTrendingTickers();
 
@@ -156,7 +163,7 @@ async function huntCandidates(context) {
     });
   }
 
-  const shortlist = [...pool.values()].slice(0, MAX_CANDIDATES_SCREENED);
+  const shortlist = [...pool.values()].slice(0, Math.max(MAX_CANDIDATES_SCREENED, toCouncil));
   if (!shortlist.length) {
     return { candidates: [], screened: 0, note: 'No candidates outside the current book this week.' };
   }
@@ -194,7 +201,7 @@ async function huntCandidates(context) {
   scored.sort((a, b) => b.score - a.score);
 
   return {
-    candidates: scored.slice(0, MAX_CANDIDATES_TO_COUNCIL),
+    candidates: scored.slice(0, toCouncil),
     allScored: scored,
     screened: shortlist.length,
     dataFailures: shortlist.length - scored.length,

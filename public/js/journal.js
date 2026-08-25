@@ -172,7 +172,6 @@ function escapeHtml(str) {
 }
 
 (async function init() {
-  await syncContextFromServer();
   loadScorecard();
   loadEntries();
 })();

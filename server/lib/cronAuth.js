@@ -26,4 +26,20 @@ function requireCronKey(req, res) {
   return true;
 }
 
-module.exports = { requireCronKey };
+/**
+ * A scheduled job that 500s used to fail silently — cron-job.org logs it, but
+ * nobody reads those logs. One Telegram line the moment it breaks means the
+ * system's failures are as visible as its successes. Never throws.
+ */
+async function reportCronFailure(jobName, err) {
+  try {
+    const { sendMessage } = require('../services/telegram');
+    await sendMessage(
+      `⚠️ Scheduled job failed: ${jobName}\n\n${String(err && err.message).slice(0, 300)}\n\nThe job will retry on its normal schedule. If this keeps appearing, check the Render logs.`
+    );
+  } catch (e) {
+    console.error(`[cron] could not report ${jobName} failure:`, e.message);
+  }
+}
+
+module.exports = { requireCronKey, reportCronFailure };

@@ -18,7 +18,7 @@
  */
 
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
+const { updateContext } = require('../lib/store');
 
 const MAX_ANALYSES = 400;
 
@@ -75,16 +75,16 @@ function buildRecord({
 }
 
 /**
- * Persists an analysis. Re-reads context immediately before writing so
- * parallel runs don't clobber each other.
+ * Persists an analysis, applied to the live context so parallel runs can't
+ * clobber each other.
  */
 function recordAnalysis(payload) {
   try {
     const record = buildRecord(payload);
-    const context = readContext();
-    context.analyses.history.push(record);
-    if (context.analyses.history.length > MAX_ANALYSES) context.analyses.history.shift();
-    writeContext(context);
+    updateContext((context) => {
+      context.analyses.history.push(record);
+      if (context.analyses.history.length > MAX_ANALYSES) context.analyses.history.shift();
+    });
     return record;
   } catch (err) {
     // Never let a bookkeeping failure break an analysis that already succeeded.

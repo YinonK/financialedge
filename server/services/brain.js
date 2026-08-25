@@ -17,6 +17,7 @@
  */
 
 const council = require('./council');
+const costTracker = require('./costTracker');
 const { getTechnicals } = require('./yahooFinance');
 const { getValuation } = require('./valuation');
 const { getFlowSentiment } = require('./flowSentiment');
@@ -141,9 +142,12 @@ ${
 
 The structured Five Lenses data above was gathered server-side from real feeds. Lenses marked available:false or status:'na' have NO data — reason around the gap, never invent numbers to fill it.`;
 
+      const depth = council.depthForPath(context && context.settings, 'research');
       const result = await council.conveneWithMemory(situation, context, symbol, {
         settings: context && context.settings,
         costLabel: `research (${symbol})`,
+        roleIds: depth.roleIds,
+        catfish: depth.catfish,
       });
       brainAnalysis = result.verdict;
       councilResult = {
@@ -201,8 +205,10 @@ Remember: you can discuss, analyze, and recommend freely, including specific ent
 
   // Chat stays single-voice (the chair) — a three-way argument on every
   // casual message would be slow and noisy. The full Council convenes on
-  // research calls and significant crossroads.
-  const text = await council.chairGenerate(`${SYSTEM_PERSONA}\n\n${contextPreamble}`, history, { json: false });
+  // research calls and significant crossroads. Metered like every other path.
+  const text = await costTracker.metered('brain chat', context.settings, (onUsage) =>
+    council.chairGenerate(`${SYSTEM_PERSONA}\n\n${contextPreamble}`, history, { json: false, onUsage })
+  );
   return text;
 }
 

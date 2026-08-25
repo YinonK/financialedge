@@ -1,17 +1,14 @@
 'use strict';
 
 const express = require('express');
-const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
-const { requireCronKey } = require('../lib/cronAuth');
-const { reviewPosition, positionsDueForReview } = require('../services/positionReview');
+const { readContext } = require('../lib/store');
+const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
+const { reviewPosition, positionsDueForReview, persistReview } = require('../services/positionReview');
 const { sendMessage } = require('../services/telegram');
 const costTracker = require('../services/costTracker');
-const { recordAnalysis } = require('../services/analysisStore');
 
 const router = express.Router();
 
-const MAX_HISTORY = 200;
 // A full Council review is ~8 model calls. Reviewing a whole book in one cron
 // tick would blow past any sane timeout, so scheduled runs are capped and the
 // rest simply come due on the next tick.
@@ -51,46 +48,6 @@ ${v.headline || ''}${changed}
 ${v.keyTakeaway || ''}${revised}${link}`;
 }
 
-function recordReview(context, review) {
-  // Also write into the unified analysis store so position reviews show up in
-  // the browsable history and feed future reflection on this ticker.
-  const rec = recordAnalysis({
-    ticker: review.ticker,
-    kind: 'position_review',
-    trigger: review.trigger,
-    verdict: review.verdict,
-    seats: review.seats,
-    catfish: review.catfish,
-    revisedAfterCatfish: review.revisedAfterCatfish,
-    missingSeats: review.missingSeats,
-    providersUsed: review.providersUsed,
-    errors: review.errors,
-    cost: review.cost,
-    extraContext: { positionId: review.positionId, snapshot: review.snapshot, eventReason: review.eventReason },
-  });
-  review.analysisId = rec ? rec.id : null;
-
-  context.positionReviews.history.push({
-    analysisId: review.analysisId,
-    id: crypto.randomUUID(),
-    positionId: review.positionId,
-    ticker: review.ticker,
-    trigger: review.trigger,
-    eventReason: review.eventReason,
-    reviewedAt: review.reviewedAt,
-    snapshot: review.snapshot,
-    verdict: review.verdict,
-    seats: review.seats,
-    catfish: review.catfish,
-    revisedAfterCatfish: review.revisedAfterCatfish,
-    missingSeats: review.missingSeats,
-    providersUsed: review.providersUsed,
-    errors: review.errors,
-  });
-  if (context.positionReviews.history.length > MAX_HISTORY) context.positionReviews.history.shift();
-  context.positionReviews.lastReviewedAt[review.positionId] = review.reviewedAt;
-}
-
 // --- Manual review of a single position (from the Portfolio screen) ---
 router.post('/:id/review', async (req, res) => {
   try {
@@ -99,10 +56,7 @@ router.post('/:id/review', async (req, res) => {
     if (!position) return res.status(404).json({ error: 'position not found' });
 
     const review = await reviewPosition(position, context, { trigger: 'manual' });
-
-    const fresh = readContext();
-    recordReview(fresh, review);
-    writeContext(fresh);
+    persistReview(review);
 
     // Alert on manual runs too, but only when the thesis is actually in trouble.
     const status = review.verdict && review.verdict.thesisStatus;
@@ -142,9 +96,7 @@ router.post('/review-due', async (req, res) => {
     for (const position of batch) {
       try {
         const review = await reviewPosition(position, readContext(), { trigger: 'scheduled' });
-        const fresh = readContext();
-        recordReview(fresh, review);
-        writeContext(fresh);
+        persistReview(review);
 
         const status = review.verdict && review.verdict.thesisStatus;
         if (status === 'BROKEN' || status === 'WEAKENING') {
@@ -173,6 +125,7 @@ router.post('/review-due', async (req, res) => {
       results,
     });
   } catch (err) {
+    await reportCronFailure('position review sweep', err);
     res.status(500).json({ error: err.message });
   }
 });

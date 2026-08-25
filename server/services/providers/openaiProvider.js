@@ -10,6 +10,10 @@
 const MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-terra';
 const API_URL = 'https://api.openai.com/v1/chat/completions';
 
+// A hung socket must never stall a Council run forever (Node's fetch has no
+// default timeout). Generous, because reasoning models genuinely take minutes.
+const REQUEST_TIMEOUT_MS = 300000;
+
 function isConfigured() {
   return Boolean(process.env.OPENAI_API_KEY);
 }
@@ -62,6 +66,7 @@ async function generate(systemInstruction, history, opts = {}) {
 
   const res = await fetch(API_URL, {
     method: 'POST',
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,

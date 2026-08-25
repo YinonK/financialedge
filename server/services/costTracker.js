@@ -14,7 +14,7 @@
  * to trust what you're reading.
  */
 
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, updateContext } = require('../lib/store');
 
 /**
  * USD per 1M tokens. These are defaults — they go stale as vendors reprice,
@@ -97,42 +97,62 @@ function createRunMeter(settings) {
 }
 
 /**
- * Folds a completed run's cost into the persisted monthly total.
- * Re-reads context immediately before writing to avoid clobbering concurrent
- * writes from parallel Council runs.
+ * Folds a completed run's cost into the persisted monthly total, applied to
+ * the live context so parallel Council runs can't clobber each other.
  */
 function commitRunCost(runSummary, label) {
   if (!runSummary || !runSummary.calls) return null;
-  const context = readContext();
   const key = monthKey();
+  let committed = null;
 
-  if (!context.costs.months[key]) {
-    context.costs.months[key] = { totalUsd: 0, runs: 0, calls: 0, byProvider: {} };
-  }
-  const m = context.costs.months[key];
-  m.totalUsd = +(m.totalUsd + runSummary.totalUsd).toFixed(6);
-  m.runs += 1;
-  m.calls += runSummary.calls;
-  for (const [pid, b] of Object.entries(runSummary.byProvider)) {
-    if (!m.byProvider[pid]) m.byProvider[pid] = { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
-    const t = m.byProvider[pid];
-    t.calls += b.calls;
-    t.inputTokens += b.inputTokens;
-    t.outputTokens += b.outputTokens;
-    t.costUsd = +(t.costUsd + b.costUsd).toFixed(6);
-  }
+  updateContext((context) => {
+    if (!context.costs.months[key]) {
+      context.costs.months[key] = { totalUsd: 0, runs: 0, calls: 0, byProvider: {} };
+    }
+    const m = context.costs.months[key];
+    m.totalUsd = +(m.totalUsd + runSummary.totalUsd).toFixed(6);
+    m.runs += 1;
+    m.calls += runSummary.calls;
+    for (const [pid, b] of Object.entries(runSummary.byProvider)) {
+      if (!m.byProvider[pid]) m.byProvider[pid] = { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 };
+      const t = m.byProvider[pid];
+      t.calls += b.calls;
+      t.inputTokens += b.inputTokens;
+      t.outputTokens += b.outputTokens;
+      t.costUsd = +(t.costUsd + b.costUsd).toFixed(6);
+    }
 
-  context.costs.recentRuns.push({
-    ts: new Date().toISOString(),
-    label: label || 'council run',
-    totalUsd: runSummary.totalUsd,
-    calls: runSummary.calls,
-    byProvider: runSummary.byProvider,
+    context.costs.recentRuns.push({
+      ts: new Date().toISOString(),
+      label: label || 'council run',
+      totalUsd: runSummary.totalUsd,
+      calls: runSummary.calls,
+      byProvider: runSummary.byProvider,
+    });
+    if (context.costs.recentRuns.length > 200) context.costs.recentRuns.shift();
+    committed = m;
   });
-  if (context.costs.recentRuns.length > 200) context.costs.recentRuns.shift();
 
-  writeContext(context);
-  return m;
+  return committed;
+}
+
+/**
+ * Meters a single-voice LLM path (chat, briefing, extraction...) that
+ * previously ran outside cost tracking entirely. Usage: wrap the call —
+ *   await metered('brain chat', settings, (onUsage) => chairGenerate(..., { onUsage }))
+ * The result is returned unchanged; the cost is committed with the label.
+ */
+async function metered(label, settings, fn) {
+  const meter = createRunMeter(settings);
+  try {
+    return await fn(meter.record);
+  } finally {
+    try {
+      commitRunCost(meter.summary(), label);
+    } catch (err) {
+      console.error(`[costTracker] failed to commit cost for ${label}:`, err.message);
+    }
+  }
 }
 
 /**
@@ -173,7 +193,10 @@ function projectMonth(context, now = new Date()) {
     percentOfCeiling: ceiling ? +((projectedUsd / ceiling) * 100).toFixed(0) : 0,
     overCeiling: m.totalUsd >= ceiling,
     projectedOverCeiling: projectedUsd >= ceiling,
-    shouldWarn: projectedUsd >= ceiling * warnAt,
+    // Actual spend past the warn line always warns. A pure projection only
+    // warns from day 3 — one run on the 1st straight-lines to a scary number
+    // that means nothing.
+    shouldWarn: m.totalUsd >= ceiling * warnAt || (projectedUsd >= ceiling * warnAt && dayOfMonth >= 3),
   };
 }
 
@@ -189,8 +212,9 @@ function maybeBudgetWarning() {
   const today = new Date().toISOString().slice(0, 10);
   if (context.costs.lastWarnedOn === today) return null;
 
-  context.costs.lastWarnedOn = today;
-  writeContext(context);
+  updateContext((ctx) => {
+    ctx.costs.lastWarnedOn = today;
+  });
 
   const msg = projection.overCeiling
     ? `Heads up: AI spend this month is $${projection.spentUsd}, which is over your $${projection.ceilingUsd} limit.
@@ -210,6 +234,7 @@ You can change the limit or the job schedules in Settings.`;
 module.exports = {
   createRunMeter,
   commitRunCost,
+  metered,
   projectMonth,
   maybeBudgetWarning,
   priceUsage,

@@ -26,34 +26,12 @@ function renderSidebar(activeHref) {
   `;
 }
 
-// ---- localStorage <-> server context sync ----
-// The server's data/context.json is the durable copy on Render, but on the
-// free tier it resets on redeploy/restart (no persistent disk). localStorage
-// in the browser survives that, so we mirror context down on load and back
-// up on change, and the server always wins conflicts on read (last-sync-wins).
-const LOCAL_STORAGE_KEY = 'financialedge_context_v1';
-
-async function syncContextFromServer() {
-  try {
-    const ctx = await Api.get('/api/context');
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(ctx));
-    return ctx;
-  } catch (err) {
-    const cached = localStorage.getItem(LOCAL_STORAGE_KEY);
-    return cached ? JSON.parse(cached) : null;
-  }
-}
-
-async function pushContextToServer(partialContext) {
-  try {
-    const saved = await Api.put('/api/context', partialContext);
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(saved));
-    return saved;
-  } catch (err) {
-    console.error('Failed to sync context to server:', err.message);
-    return null;
-  }
-}
+// NOTE: this file used to mirror the ENTIRE server context into localStorage
+// on every page load. That made sense when the server had no durable disk;
+// with Supabase it was just a multi-megabyte download per screen (full Council
+// transcripts included) heading for the localStorage quota. Every screen loads
+// what it needs from targeted endpoints now.
+localStorage.removeItem('financialedge_context_v1'); // clean up the old mirror
 
 // ---- Formatting ----
 function fmtMoney(n, currency = 'USD') {

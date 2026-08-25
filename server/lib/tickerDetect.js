@@ -26,15 +26,26 @@ const STOPWORDS = new Set([
  * words not in the stopword list, optionally with a single trailing
  * class letter like BRK.B.
  */
-function detectTickers(text) {
+/**
+ * Explicit $TICKER cashtags only — the one regex signal that's actually
+ * trustworthy. Bare-caps matches ("NEXT WEEK") are guesses and must go
+ * through the LLM extractor, never straight into convergence.
+ */
+function detectCashtags(text) {
   if (!text) return [];
   const found = new Set();
-
   const cashtagRe = /\$([A-Z]{1,5})\b/g;
   let m;
   while ((m = cashtagRe.exec(text)) !== null) {
     found.add(m[1]);
   }
+  return [...found];
+}
+
+function detectTickers(text) {
+  if (!text) return [];
+  const found = new Set(detectCashtags(text));
+  let m;
 
   const bareRe = /\b([A-Z]{1,5}(?:\.[A-Z])?)\b/g;
   while ((m = bareRe.exec(text)) !== null) {
@@ -48,4 +59,4 @@ function detectTickers(text) {
   return [...found];
 }
 
-module.exports = { detectTickers };
+module.exports = { detectTickers, detectCashtags };

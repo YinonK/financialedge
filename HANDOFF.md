@@ -82,7 +82,7 @@ Two findings drove the design:
 | **Bear Analyst** | GPT-5.6 Terra | **Forced onto a different model from Bull** (`opposes: 'bull'`) so the adversarial split is two genuinely different models, not one arguing with itself |
 | **Risk Manager** | Claude Sonnet 5 | Capital preservation; carries **veto weight** — "unacceptable" forces AVOID/WATCH regardless of the bull case |
 | **Fact-Checker** | GPT-5.6 Terra (`specialist`) | GPT leads on hallucination-resistance in financial benchmarks — this seat's entire job |
-| **Macro / Live-Web Analyst** | Gemini Pro (`specialist`) | Best for live web-grounded context; also the only seat that can say something useful when a signal has **no ticker at all** |
+| **Macro Analyst** | Gemini Pro (`specialist`) | Top-down view; the only seat that can say something useful when a signal has **no ticker at all**. (Formerly named "Live-Web Analyst" — renamed honestly: no live search grounding is wired in; the seat sees prompt data + training knowledge) |
 | **Sentiment Analyst** | Gemini Pro | Crowd psychology, crowding, hype-cycle stage, promotional tells. **Deliberately NOT merged with Macro** — "the crowd is euphoric" and "the Fed is hawkish" point in different directions |
 | **CFO (chair)** | Claude Sonnet 5 | Synthesises; must keep **verified facts separate from unverified signal claims** and surface real disagreement |
 | **Catfish** | GPT-5.6 Terra | Mandatory opposition, runs **after** the CFO draft, on a **different model from the chair** — a seat attacking a draft it wrote itself is compromised |
@@ -107,7 +107,7 @@ A live NVDA run produced genuine disagreement: Bull conviction 5 vs Bear convict
 
 ### Cost tracking & budget guard
 
-`server/services/costTracker.js`. Providers report **real token usage** (not string-length estimates) via an `onUsage` callback. Priced against an editable rate table:
+`server/services/costTracker.js`. Providers report **real token usage** (not string-length estimates) via an `onUsage` callback. Since the 2026-08-25 hardening pass **every** LLM path is metered — full Council runs *and* brain chat, morning briefing, weekly review, journal reflection, watchdog quick takes, and Hebrew entity extraction (`costTracker.metered()` wraps each). Priced against an editable rate table:
 
 | Provider | Input $/1M | Output $/1M | Status |
 |---|---|---|---|
@@ -148,11 +148,11 @@ Live: Fear & Greed (<15), VIX (>30, watch >20), consecutive S&P red days (≥3),
 | Budget ceiling (USD) + warn threshold | ✅ Yes |
 | Position review cadence (1/3/7 days or off) | ✅ Yes |
 | Model price overrides | ✅ Yes |
-| Opportunity hunt candidate count | ⚠️ **Stored and editable, but NOT read by the hunt** (hardcoded to 3) |
-| Opportunity hunt cadence days | ⚠️ **Stored but NOT enforced** |
-| `fullCouncilPaths` per-path toggles | ⚠️ **Stored but NOT enforced** — no code reads it |
+| Opportunity hunt candidate count | ✅ Yes (1–10, read by `huntCandidates`) |
+| Opportunity hunt cadence days | ✅ Yes — hunt route self-checks "has it been N days?"; 0 disables |
+| `fullCouncilPaths` per-path toggles | ✅ Yes — `false` runs a light bench (Bull/Bear/Risk, no Catfish, ~half the calls) via `council.depthForPath()` |
 
-Those three are a known gap — see §9.
+All three former gaps were closed in the 2026-08-25 hardening pass.
 
 ---
 
@@ -204,8 +204,11 @@ All POST with header `X-Cron-Key: <CRON_KEY>`, except the ping (GET, no header).
 | Opportunity hunt | `/api/opportunities` | Weekdays ~16:00 Israel | ✅ Live |
 | Weekly review | `/api/review/weekly` | Saturdays ~10:00 Israel | ✅ Live |
 | Telegram ingest | `/api/signals/ingest` | Every 15 min | ✅ Live |
-| **Position review sweep** | `/api/positions/review-due` | Daily ~17:00 Israel | ❌ **NOT SET UP** |
-| **Keep-alive ping** | `/api/ping` | Every 10 min (GET) | ❌ **NOT SET UP** |
+| **Position review sweep** | `/api/positions/review-due` | Daily ~17:00 Israel | ✅ Live |
+| **Keep-alive ping** | `/api/ping` | Every 10 min (GET) | ✅ Live |
+| **Backup export** | `/api/backup` | Weekly (e.g. Sundays) | ⚠️ **NEW — needs a cron-job.org entry.** Sends the full working context as a JSON file to Yinon's Telegram chat (Supabase free tier has no point-in-time recovery) |
+
+**Failure alerting:** every cron route now sends one Telegram line if it 500s (`reportCronFailure`), so a silently broken job surfaces the day it breaks.
 
 **Why the ping matters:** Render's free tier sleeps after ~15 min idle; cold start is 30–60s, which exceeds cron-job.org's 30s timeout. The 15-min ingest job sits right on that boundary, causing intermittent 503s. A 10-min ping keeps it warm.
 
@@ -219,9 +222,9 @@ Price mechanics only — stop breached, stop approaching, target hit, plus marke
 ### Event-triggered position reviews
 The watchdog also detects material events on held names and fires an immediate single-position Council re-underwriting:
 1. Fresh channel chatter mentioning a held ticker (deduped by signal ID so one post fires one review)
-2. Price testing/breaking a structural level — 200 DMA or 0.5/0.618 Fibonacci
+2. Price testing/breaking a structural level — 200 DMA or 0.5/0.618 Fibonacci (deduped per level with a 7-day cooldown, so a price *hovering* at its 200 DMA is one event, not one paid review per tick)
 
-Capped at one per tick.
+Capped at one per tick. Convergence alerts from ingest are similarly deduped: a Council run fires when a convergence is new, escalates to strong, or resurfaces after 7 days — not on every additional mention.
 
 ### Portfolio Council Review
 Distinct from both the watchdog (price only) and weekly review (backward-looking). **Forward-looking and thesis-based:** pulls the original journal entry (thesis, conviction, Council read at entry) and asks *"is what we believed still true?"* Returns an explicit **INTACT / WEAKENING / BROKEN** status plus "what changed since entry". Catches the failure where a position sits happily between stop and target while the reason for owning it quietly dies.
@@ -291,8 +294,7 @@ Verified by grepping the actual codebase, not recalled.
 
 ### Built but NOT wired up
 - **Stage D — named price levels from signals are extracted but ignored.** `entityExtract.js` produces `namedPriceLevels` (support/resistance quoted in the Hebrew posts themselves), but `watchdog.js` only checks computed 200 DMA / Fibonacci levels. Wiring these together is a small, high-value change.
-- **`fullCouncilPaths` setting is not enforced.** Editable in Settings, saved, and read by nothing. All paths always run the full Council.
-- **`opportunityHuntCandidates` / `opportunityHuntCadenceDays` not enforced.** The hunt uses a hardcoded `MAX_CANDIDATES_TO_COUNCIL = 3`.
+- ~~`fullCouncilPaths` / `opportunityHuntCandidates` / `opportunityHuntCadenceDays` not enforced~~ — **fixed 2026-08-25**, all three are enforced now (see §4).
 
 ### Known limitations
 - **Yahoo `quoteSummary` is frequently bot-blocked**, so valuation and flow/sentiment lenses often return `available: false`. Handled honestly (never faked) but it means two of the Five Lenses are regularly dark.
@@ -333,7 +335,8 @@ Names only — never commit or paste values. `.env` is git-ignored; `.env.exampl
 | `ANTHROPIC_TEMPERATURE` | **Opt-in only** — temperature is deprecated on Sonnet 5 and sending it is a hard 400 |
 | `OPENAI_MIN_COMPLETION_TOKENS` | Defaults to 32000 |
 | `OPENAI_REASONING_EFFORT` | Opt-in |
-| `TELEGRAM_WEBHOOK_SECRET` | Extra webhook validation |
+| `APP_KEY` | ⚠️ **NEW — set this.** Locks every user-facing API route (browser sends it as `X-App-Key`, asked once and kept in localStorage). Unset = API is open to anyone with the URL, with a loud startup warning |
+| `TELEGRAM_WEBHOOK_SECRET` | Extra webhook validation; **defaults to `CRON_KEY`** since 2026-08-25, so the webhook is authenticated even without it |
 | `PUBLIC_BASE_URL` | Local/ngrok override; Render sets `RENDER_EXTERNAL_URL` automatically |
 | `BRIEFING_KEY` | Legacy alias for `CRON_KEY`, still accepted |
 | `MARKETAUX_API_KEY` | ❌ **Not set, not used — Stage E not built** |
@@ -376,10 +379,11 @@ Names only — never commit or paste values. `.env` is git-ignored; `.env.exampl
 server/
   index.js                    Express app, route mounting, startup, health
   lib/
-    store.js                  readContext/writeContext facade (sync API)
-    storage/                  index.js (facade) + fileAdapter + supabaseAdapter
-    cronAuth.js               shared X-Cron-Key check
-    tickerDetect.js           regex fast path + stopword list
+    store.js                  readContext/writeContext/updateContext facade (sync API)
+    storage/                  index.js (facade + mutate) + fileAdapter + supabaseAdapter
+    appAuth.js                APP_KEY auth middleware (every /api route except ping + webhook)
+    cronAuth.js               shared X-Cron-Key check + reportCronFailure
+    tickerDetect.js           cashtag + bare-caps regex, stopword list
   services/
     council.js                convene(), chairGenerate(), health, cost metering
     roles.js                  all 8 seat definitions + assignment algorithm
@@ -399,11 +403,47 @@ server/
     yahooFinance.js           prices, technicals (DMA/RSI/MACD/Fib)
     marketIndicators.js       the indicator dashboard
     brain.js                  Five Lenses research + chat + SYSTEM_PERSONA
-  routes/                     one file per API surface
+  routes/                     one file per API surface (incl. backup.js — weekly Telegram export)
 public/                       8 screens, css/, js/ (one file per screen)
+tests/                        node:test suite — `npm test` (journal math, zones, tickers, RSI, extraction filters)
 supabase-schema.sql           run once in Supabase SQL Editor
 ```
 
+**State-mutation rule (important):** never hold a `readContext()` snapshot across an `await` and then `writeContext(snapshot)` — that erases everything written in between (this bug bit the watchdog, position reviews, and the opportunity hunt before 2026-08-25). Do the slow work first, then apply only your own changes inside `updateContext((ctx) => { ... })`.
+
 **To add a 4th AI provider:** write one file in `services/providers/` exporting `{ id, label, isConfigured, generate }` and add it to the array in `providers/index.js`. Nothing else enumerates providers.
 
-**Highest-value next steps:** (1) set up the two missing cron jobs, (2) wire `namedPriceLevels` into the watchdog (Stage D — small change, data already extracted), (3) enforce the three dead settings, (4) build Marketaux (Stage E) if macro news coverage matters.
+**Highest-value next steps:** (1) set `APP_KEY` on Render and add the weekly `/api/backup` cron job, (2) wire `namedPriceLevels` into the watchdog (Stage D — small change, data already extracted), (3) build Marketaux (Stage E) if macro news coverage matters, (4) verify a real Telegram round-trip from the phone (`/status`).
+
+---
+
+## 13. Hardening pass — 2026-08-25
+
+A full code review found and fixed, in one pass (all covered by `npm test` where unit-testable):
+
+**Correctness**
+- **Lost-update race, systemic**: routes held a `readContext()` snapshot across long awaits and wrote it back, erasing concurrent writes — event reviews re-fired every tick (paid), recorded analyses vanished until restart, ingest checkpoints rolled back. Fixed with `updateContext()` applied to the live context in every route/service.
+- **Journal short math**: `closeEntry` was long-only (literally `? 1 : 1`) — a closed short recorded inverted P&L into the scorecard and calibration. Entries now carry `side`; shorts use action `SHORT`.
+- **Deletes never reached Supabase**: deleted signals/journal entries resurrected from Postgres on restart. The adapter now diffs and deletes (analyses excluded on purpose — their in-memory trim is a cap, not a delete).
+- **Watchdog event reviews never entered the analysis store** — now they share `persistReview()` with all other review paths.
+
+**Security**
+- **`APP_KEY` auth** on every user-facing API route (the portfolio dump, paid research endpoint, brain chat, and deletes were open to anyone with the URL). Cron keys still work everywhere; ping and the Telegram webhook stay exempt. Unset = open, with a loud warning.
+- Telegram webhook secret now defaults to `CRON_KEY`; Gemini key moved from URL query to header; dangerous unused `PUT /api/context` (full overwrite, unauthenticated) removed.
+
+**Cost / noise**
+- Level-break events get a 7-day per-level cooldown (hovering at the 200 DMA was one paid Council review per tick).
+- Convergence alerts dedup: new / newly-strong / resurfaced-after-7-days only (was: every ingest tick for an active name).
+- **Every LLM path is now metered** — chat, briefing, weekly review, journal reflection, quick takes, entity extraction were all invisible to the budget guard.
+- Ticker fast path is cashtag-only; bare-caps guesses ("NEXT WEEK") no longer enter convergence as high-confidence tickers.
+- The three dead settings (hunt candidates, hunt cadence, `fullCouncilPaths`) are enforced.
+
+**Robustness**
+- Timeouts on every outbound fetch (providers 300s, data feeds 10–15s, Supabase 20s — a hung socket used to stall the write queue or a Council seat forever).
+- Telegram Markdown 400s retry as plain text (an unbalanced `*` in model output used to silently kill the alert).
+- Cron failures send one Telegram line (`reportCronFailure`); weekly `/api/backup` exports the context as a JSON document to Telegram; `brain.messages` capped at 500; RSI switched to standard Wilder's smoothing; budget projection no longer cries wolf on day 1 of a month.
+- Frontend no longer downloads the entire context (with full transcripts) into localStorage on every page load.
+
+**Honesty**
+- "Macro / Live-Web Analyst" renamed **Macro Analyst** — no live search grounding was ever wired in.
+- Dead `deliberate()`/`brainstormSignals()` "Analyst A/B/C" path (~200 lines, unmetered) deleted.

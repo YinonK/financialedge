@@ -2,13 +2,14 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, updateContext } = require('../lib/store');
 const { checkPositions, isUsMarketHours, detectMaterialEvents } = require('../services/watchdog');
-const { reviewPosition } = require('../services/positionReview');
+const { reviewPosition, persistReview } = require('../services/positionReview');
 const { getIndicators } = require('../services/marketIndicators');
 const { sendMessage } = require('../services/telegram');
-const { requireCronKey } = require('../lib/cronAuth');
+const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
 const council = require('../services/council');
+const costTracker = require('../services/costTracker');
 const { SYSTEM_PERSONA } = require('../services/brain');
 
 const router = express.Router();
@@ -25,6 +26,8 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    // Snapshot for computing only — every WRITE below goes through
+    // updateContext so nothing written meanwhile can be clobbered.
     const context = readContext();
     const positions = context.portfolio.positions;
 
@@ -55,11 +58,14 @@ router.post('/', async (req, res) => {
       // for a quick multi-model read before alerting. Failures never block
       // the alert itself.
       try {
-        councilRead = await council.quickTake(
-          SYSTEM_PERSONA,
-          `Watchdog crossroads for Yinon's book. Flags just raised:\n${actionable
-            .map((f) => `- [${f.severity}] ${f.message}`)
-            .join('\n')}\n\nOpen positions: ${JSON.stringify(positions)}`
+        councilRead = await costTracker.metered('watchdog quick take', context.settings, (onUsage) =>
+          council.quickTake(
+            SYSTEM_PERSONA,
+            `Watchdog crossroads for Yinon's book. Flags just raised:\n${actionable
+              .map((f) => `- [${f.severity}] ${f.message}`)
+              .join('\n')}\n\nOpen positions: ${JSON.stringify(positions)}`,
+            { onUsage }
+          )
         );
       } catch (err) {
         console.error('[watchdog] council quickTake failed:', err.message);
@@ -93,36 +99,19 @@ router.post('/', async (req, res) => {
           });
 
           if (review) {
-            const fresh = readContext();
-            fresh.positionReviews.history.push({
-              id: crypto.randomUUID(),
-              positionId: review.positionId,
-              ticker: review.ticker,
-              trigger: review.trigger,
-              eventReason: review.eventReason,
-              reviewedAt: review.reviewedAt,
-              snapshot: review.snapshot,
-              verdict: review.verdict,
-              seats: review.seats,
-              catfish: review.catfish,
-              revisedAfterCatfish: review.revisedAfterCatfish,
-              missingSeats: review.missingSeats,
-              providersUsed: review.providersUsed,
-              errors: review.errors,
-            });
-            if (fresh.positionReviews.history.length > 200) fresh.positionReviews.history.shift();
-            fresh.positionReviews.lastReviewedAt[review.positionId] = review.reviewedAt;
-
-            // Mark the triggering signals seen so this doesn't re-fire every tick.
-            if (event.signalIds && event.signalIds.length) {
-              const prev = fresh.positionReviews.seenSignalIds[event.positionId] || [];
-              fresh.positionReviews.seenSignalIds[event.positionId] = [...prev, ...event.signalIds].slice(-200);
-            }
-            writeContext(fresh);
+            // One shared, atomic persistence path: analysis store + review
+            // history + seen-signal/level bookkeeping, applied to the live
+            // context so this tick's OWN final write can't revert it.
+            persistReview(review, { signalIds: event.signalIds, levelName: event.levelName });
 
             const v = review.verdict || {};
             const base = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
             const emoji = v.thesisStatus === 'BROKEN' ? '🔴' : v.thesisStatus === 'WEAKENING' ? '🟠' : '🟢';
+            const link = base
+              ? review.analysisId
+                ? `\n\nFull Council debate: ${base}/analyses.html?id=${review.analysisId}`
+                : `\n\nFull Council debate: ${base}/portfolio.html`
+              : '';
             await sendMessage(
               `${emoji} Position Review triggered — ${review.ticker}\n\nWhy now: ${event.reason}\n\nThesis: ${
                 v.thesisStatus || 'unknown'
@@ -130,7 +119,7 @@ router.post('/', async (req, res) => {
                 v.headline || ''
               }${v.whatChangedSinceEntry ? `\nWhat changed: ${v.whatChangedSinceEntry}` : ''}\n\n${
                 v.keyTakeaway || ''
-              }${base ? `\n\nFull Council debate: ${base}/portfolio.html` : ''}`
+              }${link}`
             ).catch((err) => console.error('[watchdog] review alert failed:', err.message));
 
             triggeredReviews.push({
@@ -154,12 +143,14 @@ router.post('/', async (req, res) => {
       triggeredReviews,
       delivery,
     };
-    context.watchdog.history.push(entry);
-    if (context.watchdog.history.length > 200) context.watchdog.history.shift();
-    writeContext(context);
+    updateContext((ctx) => {
+      ctx.watchdog.history.push(entry);
+      if (ctx.watchdog.history.length > 200) ctx.watchdog.history.shift();
+    });
 
     res.json(entry);
   } catch (err) {
+    await reportCronFailure('watchdog', err);
     res.status(500).json({ error: err.message });
   }
 });

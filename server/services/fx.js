@@ -12,7 +12,7 @@ async function getUsdIls() {
   if (cache.rate && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
     return { rate: cache.rate, date: cache.date, cached: true };
   }
-  const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=ILS');
+  const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=ILS', { signal: AbortSignal.timeout(10000) });
   if (!res.ok) {
     throw new Error(`frankfurter.app fetch failed: HTTP ${res.status}`);
   }

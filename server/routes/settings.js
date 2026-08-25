@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, updateContext } = require('../lib/store');
 const costTracker = require('../services/costTracker');
 
 const router = express.Router();
@@ -71,18 +71,22 @@ router.put('/', (req, res) => {
 
   if (errors.length) return res.status(400).json({ error: errors.join('; ') });
 
-  writeContext(context);
+  updateContext((ctx) => {
+    ctx.settings = context.settings;
+  });
   res.json(context.settings);
 });
 
 // Reset the running spend for the current month (e.g. after correcting rates).
 router.post('/costs/reset', (req, res) => {
-  const context = readContext();
   const key = costTracker.monthKey();
-  if (context.costs.months[key]) context.costs.months[key] = { totalUsd: 0, runs: 0, calls: 0, byProvider: {} };
-  context.costs.lastWarnedOn = null;
-  writeContext(context);
-  res.json({ reset: key, costs: context.costs.months[key] });
+  let costs = null;
+  updateContext((context) => {
+    if (context.costs.months[key]) context.costs.months[key] = { totalUsd: 0, runs: 0, calls: 0, byProvider: {} };
+    context.costs.lastWarnedOn = null;
+    costs = context.costs.months[key];
+  });
+  res.json({ reset: key, costs });
 });
 
 module.exports = router;

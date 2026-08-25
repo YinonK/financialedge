@@ -19,7 +19,7 @@
 
 const crypto = require('crypto');
 
-const ACTIONS = ['BUY', 'ADD', 'TRIM', 'EXIT', 'PASS', 'WATCH'];
+const ACTIONS = ['BUY', 'SHORT', 'ADD', 'TRIM', 'EXIT', 'PASS', 'WATCH'];
 
 function createEntry(input) {
   const action = String(input.action || '').toUpperCase();
@@ -28,6 +28,7 @@ function createEntry(input) {
     ts: input.ts || new Date().toISOString(),
     ticker: String(input.ticker || '').toUpperCase(),
     action: ACTIONS.includes(action) ? action : 'BUY',
+    side: input.side === 'short' ? 'short' : 'long',
     shares: input.shares != null ? Number(input.shares) : null,
     price: input.price != null ? Number(input.price) : null,
     stopPrice: input.stopPrice != null ? Number(input.stopPrice) : null,
@@ -57,9 +58,12 @@ function closeEntry(entry, outcome) {
   let pnlUsd = null;
   let pnlPct = null;
   if (exitPrice != null && entryPrice != null && shares != null) {
-    const direction = entry.action === 'EXIT' || entry.action === 'TRIM' ? 1 : 1; // long-only journal math
+    // A closed short profits when price FALLS. Getting this sign wrong doesn't
+    // just misreport one trade — it feeds an inverted outcome into the
+    // scorecard and every calibration lesson built on it.
+    const direction = entry.side === 'short' || entry.action === 'SHORT' ? -1 : 1;
     pnlUsd = (exitPrice - entryPrice) * shares * direction;
-    pnlPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 : null;
+    pnlPct = entryPrice ? ((exitPrice - entryPrice) / entryPrice) * 100 * direction : null;
   }
 
   let result = outcome.result || null;

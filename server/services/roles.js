@@ -135,9 +135,14 @@ Do not use outside knowledge to "verify" a number. Verified means confirmed by d
 
   macroAnalyst: {
     id: 'macroAnalyst',
-    title: 'Macro / Live-Web Analyst',
+    title: 'Macro Analyst',
     specialist: true,
-    // Gemini benchmarks best on live web-grounded context.
+    // Honesty note: this seat was called "Live-Web Analyst", but no search
+    // grounding is wired into any provider call — the seat sees the prompt
+    // data plus its own training knowledge, nothing live. The name now says
+    // what it actually is. (Wiring Gemini's google_search grounding in is a
+    // possible future upgrade; it conflicts with strict-JSON output mode, so
+    // it needs real testing, not a hopeful flag.)
     preferredProviders: ['gemini', 'openai', 'anthropic'],
     mandate: `You own the top-down view — and critically, you are the seat that can say something useful when a signal has NO ticker at all (a Fed announcement, a bond market move, a tariff decision, a Bitcoin-treasury story with no equity attached).
 

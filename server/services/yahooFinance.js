@@ -28,11 +28,12 @@ async function fetchCrumb() {
   if (cachedCrumb && Date.now() - crumbFetchedAt < CRUMB_TTL_MS) {
     return { crumb: cachedCrumb, cookie: cachedCookie };
   }
-  const res = await fetch('https://fc.yahoo.com', { headers: BROWSER_HEADERS });
+  const res = await fetch('https://fc.yahoo.com', { headers: BROWSER_HEADERS, signal: AbortSignal.timeout(15000) });
   const setCookie = res.headers.get('set-cookie');
   const cookie = setCookie ? setCookie.split(';')[0] : null;
 
   const crumbRes = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+    signal: AbortSignal.timeout(15000),
     headers: { ...BROWSER_HEADERS, ...(cookie ? { Cookie: cookie } : {}) },
   });
   const crumb = await crumbRes.text();
@@ -49,7 +50,7 @@ async function fetchChartRaw(symbol, { range = '1y', interval = '1d' } = {}) {
   for (const host of CHART_HOSTS) {
     const url = `https://${host}/v8/finance/chart/${encoded}?range=${range}&interval=${interval}`;
     try {
-      const res = await fetch(url, { headers: BROWSER_HEADERS });
+      const res = await fetch(url, { headers: BROWSER_HEADERS, signal: AbortSignal.timeout(15000) });
       const text = await res.text();
       if (text && text.trim().length > 0) {
         const json = JSON.parse(text);
@@ -71,6 +72,7 @@ async function fetchChartRaw(symbol, { range = '1y', interval = '1d' } = {}) {
         crumb
       )}`;
       const res = await fetch(url, {
+        signal: AbortSignal.timeout(15000),
         headers: { ...BROWSER_HEADERS, ...(cookie ? { Cookie: cookie } : {}) },
       });
       const text = await res.text();
@@ -179,28 +181,42 @@ function ema(values, period) {
   return out;
 }
 
-function rsi(values, period = 14) {
-  if (values.length < period + 1) return null;
-  let gains = 0;
-  let losses = 0;
-  for (let i = values.length - period; i < values.length; i++) {
-    const diff = values[i] - values[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
-  }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - 100 / (1 + rs);
-}
-
+/**
+ * Wilder's RSI — the standard calculation traders see on TradingView and
+ * broker charts. The previous version used a plain lookback average, which
+ * can drift several points from the standard value; bad when the Council
+ * quotes "RSI is 72" as if it matches the chart Yinon is looking at.
+ * Single pass over the series (the old rsiSeries was O(n²)).
+ */
 function rsiSeries(values, period = 14) {
   const out = new Array(values.length).fill(null);
-  for (let i = period; i < values.length; i++) {
-    out[i] = rsi(values.slice(0, i + 1), period);
+  if (values.length < period + 1) return out;
+
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = values[i] - values[i - 1];
+    if (diff >= 0) avgGain += diff;
+    else avgLoss -= diff;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+
+  for (let i = period + 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   }
   return out;
+}
+
+function rsi(values, period = 14) {
+  const series = rsiSeries(values, period);
+  return series.length ? series[series.length - 1] : null;
 }
 
 function macd(values, fast = 12, slow = 26, signalPeriod = 9) {

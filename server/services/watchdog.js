@@ -106,10 +106,17 @@ async function checkPositions(positions) {
  * Signal-driven events are deduped per position via seenSignalIds, so one
  * post doesn't re-fire a review on every watchdog tick.
  */
+// A price can sit within 1.5% of its 200 DMA for days. Without a cooldown
+// that fired a full (paid) Council review on every single tick — one review
+// per level per position per week is the event; the rest is the same event.
+const LEVEL_REBREAK_COOLDOWN_DAYS = 7;
+
 async function detectMaterialEvents(context, positions) {
   const events = [];
   const seen = (context.positionReviews && context.positionReviews.seenSignalIds) || {};
+  const seenLevels = (context.positionReviews && context.positionReviews.seenLevelBreaks) || {};
   const recentCutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+  const levelCooldownMs = LEVEL_REBREAK_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
 
   for (const position of positions) {
     // --- 1. New signal chatter about a name we hold ---
@@ -145,10 +152,14 @@ async function detectMaterialEvents(context, positions) {
       }
 
       // "Just broke" = within 1.5% of the level, so we catch the break rather
-      // than reporting a level crossed weeks ago.
+      // than reporting a level crossed weeks ago. Levels already reviewed
+      // inside the cooldown window don't count — hovering is one event.
+      const positionLevels = seenLevels[position.id] || {};
       const broken = levels.find((l) => {
         const distPct = Math.abs((price - l.value) / l.value) * 100;
-        return distPct <= 1.5;
+        if (distPct > 1.5) return false;
+        const lastReviewed = positionLevels[l.name];
+        return !lastReviewed || Date.now() - new Date(lastReviewed).getTime() >= levelCooldownMs;
       });
 
       if (broken) {
@@ -156,6 +167,7 @@ async function detectMaterialEvents(context, positions) {
           positionId: position.id,
           ticker: position.ticker,
           type: 'level_break',
+          levelName: broken.name,
           reason: `${position.ticker} is testing/breaking its ${broken.name} (${broken.value.toFixed(2)}) at ${price.toFixed(
             2
           )}`,

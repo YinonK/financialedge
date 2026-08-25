@@ -19,16 +19,21 @@ const analysesRoutes = require('./routes/analyses');
 const opportunitiesRoutes = require('./routes/opportunities');
 const reviewRoutes = require('./routes/review');
 const telegramWebhookRoutes = require('./routes/telegramWebhook');
-const contextRoutes = require('./routes/context');
+const backupRoutes = require('./routes/backup');
 const { initStore, flushStore, storageStatus } = require('./lib/store');
 const council = require('./services/council');
 const telegram = require('./services/telegram');
 const telegramIngest = require('./services/telegramIngest');
 
+const { appAuth } = require('./lib/appAuth');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '1mb' }));
+
+// Every /api route (except ping and the Telegram webhook) requires APP_KEY.
+app.use(appAuth);
 
 // API routes
 app.use('/api/market', marketRoutes);
@@ -45,7 +50,7 @@ app.use('/api/analyses', analysesRoutes);
 app.use('/api/opportunities', opportunitiesRoutes);
 app.use('/api/review', reviewRoutes);
 app.use('/api/telegram/webhook', telegramWebhookRoutes);
-app.use('/api/context', contextRoutes);
+app.use('/api/backup', backupRoutes);
 
 /**
  * Keep-alive ping. Deliberately the cheapest possible route: no auth, no

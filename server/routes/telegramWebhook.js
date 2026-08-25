@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, updateContext } = require('../lib/store');
 const brain = require('../services/brain');
 const { sendMessage } = require('../services/telegram');
 
@@ -19,7 +19,9 @@ router.post('/', async (req, res) => {
   res.status(200).json({ ok: true });
 
   try {
-    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+    // Mirrors registerWebhook: the secret defaults to CRON_KEY, so the
+    // webhook is authenticated even when TELEGRAM_WEBHOOK_SECRET isn't set.
+    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET || process.env.CRON_KEY;
     if (expectedSecret) {
       const providedSecret = req.get('X-Telegram-Bot-Api-Secret-Token');
       if (providedSecret !== expectedSecret) {
@@ -49,7 +51,6 @@ router.post('/', async (req, res) => {
     }
     const effectiveText = commandResult.chatMessage || message.text;
 
-    const context = readContext();
     const userMsg = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -57,17 +58,20 @@ router.post('/', async (req, res) => {
       ts: new Date().toISOString(),
       source: 'telegram',
     };
-    context.brain.messages.push(userMsg);
+    // Append via updateContext so a slow LLM reply below can't clobber
+    // whatever else (ingest, watchdog) writes in the meantime.
+    updateContext((ctx) => {
+      ctx.brain.messages.push(userMsg);
+    });
 
     if (!require('../services/council').anyConfigured()) {
       await sendMessage(
         "No AI provider is set up yet, so I can't think this through — add GEMINI_API_KEY (free, https://aistudio.google.com/apikey), ANTHROPIC_API_KEY, or OPENAI_API_KEY to .env and restart the server."
       );
-      writeContext(context);
       return;
     }
 
-    const replyText = await brain.chat(userMsg.content, context);
+    const replyText = await brain.chat(userMsg.content, readContext());
     const assistantMsg = {
       id: crypto.randomUUID(),
       role: 'assistant',
@@ -75,8 +79,9 @@ router.post('/', async (req, res) => {
       ts: new Date().toISOString(),
       source: 'telegram',
     };
-    context.brain.messages.push(assistantMsg);
-    writeContext(context);
+    updateContext((ctx) => {
+      ctx.brain.messages.push(assistantMsg);
+    });
 
     await sendMessage(replyText);
   } catch (err) {

@@ -2,14 +2,15 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, updateContext } = require('../lib/store');
 const { getIndicators } = require('../services/marketIndicators');
 const { getUsdIls } = require('../services/fx');
 const { getQuote } = require('../services/yahooFinance');
 const council = require('../services/council');
+const costTracker = require('../services/costTracker');
 const { sendBriefing } = require('../services/telegram');
 const { SYSTEM_PERSONA } = require('../services/brain');
-const { requireCronKey } = require('../lib/cronAuth');
+const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
 
 const router = express.Router();
 
@@ -47,10 +48,13 @@ Current positions:\n${positionsLines.join('\n') || 'none open'}
 
 Tone: sharp Wall Street friend, no disclaimers. Flag anything that needs his attention today. If nothing urgent, say so briefly and move on.`;
       try {
-        narrative = await council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
-          json: false,
-          maxOutputTokens: 2048, // thinking models spend reasoning tokens from this budget
-        });
+        narrative = await costTracker.metered('morning briefing', context.settings, (onUsage) =>
+          council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
+            json: false,
+            maxOutputTokens: 2048, // thinking models spend reasoning tokens from this budget
+            onUsage,
+          })
+        );
       } catch (err) {
         narrative = `(Brain narrative unavailable: ${err.message})`;
       }
@@ -71,12 +75,14 @@ USD/ILS: ${fx.rate || 'unavailable'}`;
     const delivery = await sendBriefing(summaryText);
 
     const entry = { id: crypto.randomUUID(), ts: new Date().toISOString(), summary: summaryText, delivery };
-    context.briefing.history.push(entry);
-    if (context.briefing.history.length > 90) context.briefing.history.shift();
-    writeContext(context);
+    updateContext((ctx) => {
+      ctx.briefing.history.push(entry);
+      if (ctx.briefing.history.length > 90) ctx.briefing.history.shift();
+    });
 
     res.json(entry);
   } catch (err) {
+    await reportCronFailure('morning briefing', err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -20,6 +20,8 @@ function isConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID);
 }
 
+const REQUEST_TIMEOUT_MS = 15000;
+
 async function sendMessage(text, opts = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = opts.chatId || process.env.TELEGRAM_CHAT_ID;
@@ -31,14 +33,52 @@ async function sendMessage(text, opts = {}) {
   }
 
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-  });
+  const attempt = (payload) =>
+    fetch(url, {
+      method: 'POST',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+  let res = await attempt({ chat_id: chatId, text, parse_mode: 'Markdown' });
+  if (res.status === 400) {
+    // Model-generated text with an unbalanced * or _ makes Telegram reject the
+    // whole message as bad Markdown. Losing an alert over formatting is worse
+    // than losing the formatting — retry as plain text.
+    res = await attempt({ chat_id: chatId, text });
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Telegram send failed (HTTP ${res.status}): ${body.slice(0, 300)}`);
+  }
+  return { delivered: true, stubbed: false };
+}
+
+/**
+ * Sends a file (used by the weekly backup). Content is a string or Buffer.
+ */
+async function sendDocument(filename, content, caption) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) {
+    console.log(`[telegram:stub] would send document ${filename} (${Buffer.byteLength(content)} bytes)`);
+    return { delivered: false, stubbed: true };
+  }
+
+  const form = new FormData();
+  form.append('chat_id', chatId);
+  if (caption) form.append('caption', caption);
+  form.append('document', new Blob([content], { type: 'application/json' }), filename);
+
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(60000),
+    body: form,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Telegram sendDocument failed (HTTP ${res.status}): ${body.slice(0, 300)}`);
   }
   return { delivered: true, stubbed: false };
 }
@@ -61,7 +101,10 @@ async function registerWebhook() {
   }
   try {
     const webhookUrl = `${baseUrl.replace(/\/$/, '')}/api/telegram/webhook`;
-    const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || undefined;
+    // Without a secret token, anyone who finds the webhook URL can POST fake
+    // "updates" and the only gate left is the chat-id match. Default to
+    // CRON_KEY so the webhook is authenticated even with no extra env var.
+    const secretToken = process.env.TELEGRAM_WEBHOOK_SECRET || process.env.CRON_KEY || undefined;
     const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -83,4 +126,4 @@ async function registerWebhook() {
 // Backwards-compatible alias — the briefing route was written against this name.
 const sendBriefing = sendMessage;
 
-module.exports = { sendMessage, sendBriefing, registerWebhook, isConfigured };
+module.exports = { sendMessage, sendDocument, sendBriefing, registerWebhook, isConfigured };

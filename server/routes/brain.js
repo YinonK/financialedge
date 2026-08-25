@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, updateContext } = require('../lib/store');
 const brain = require('../services/brain');
 const council = require('../services/council');
 
@@ -26,32 +26,37 @@ router.post('/chat', async (req, res) => {
     });
   }
 
-  const context = readContext();
   const userMsg = { id: crypto.randomUUID(), role: 'user', content: body.message.trim(), ts: new Date().toISOString() };
-  context.brain.messages.push(userMsg);
+  // Persist the user's message immediately, then chat off a fresh snapshot —
+  // the LLM await must never sit between a stale read and a write.
+  updateContext((ctx) => {
+    ctx.brain.messages.push(userMsg);
+  });
 
   try {
-    const replyText = await brain.chat(userMsg.content, context);
+    const replyText = await brain.chat(userMsg.content, readContext());
     const assistantMsg = {
       id: crypto.randomUUID(),
       role: 'assistant',
       content: replyText,
       ts: new Date().toISOString(),
     };
-    context.brain.messages.push(assistantMsg);
-    writeContext(context);
+    updateContext((ctx) => {
+      ctx.brain.messages.push(assistantMsg);
+    });
     res.json({ userMsg, assistantMsg });
   } catch (err) {
-    writeContext(context); // keep the user's message even if the reply failed
     res.status(502).json({ error: err.message });
   }
 });
 
 router.put('/memory', (req, res) => {
-  const context = readContext();
-  context.brain.memory = { ...context.brain.memory, ...(req.body || {}) };
-  writeContext(context);
-  res.json(context.brain.memory);
+  let memory = null;
+  updateContext((context) => {
+    context.brain.memory = { ...context.brain.memory, ...(req.body || {}) };
+    memory = context.brain.memory;
+  });
+  res.json(memory);
 });
 
 module.exports = router;

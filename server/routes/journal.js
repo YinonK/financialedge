@@ -1,9 +1,10 @@
 'use strict';
 
 const express = require('express');
-const { readContext, writeContext } = require('../lib/store');
+const { readContext, updateContext } = require('../lib/store');
 const journal = require('../services/journal');
 const council = require('../services/council');
+const costTracker = require('../services/costTracker');
 const { SYSTEM_PERSONA } = require('../services/brain');
 
 const router = express.Router();
@@ -23,53 +24,58 @@ router.post('/', (req, res) => {
   const body = req.body || {};
   if (!body.ticker) return res.status(400).json({ error: 'ticker is required' });
 
-  const context = readContext();
   const entry = journal.createEntry(body);
-  context.journal.entries.push(entry);
-  writeContext(context);
+  updateContext((context) => {
+    context.journal.entries.push(entry);
+  });
   res.status(201).json(entry);
 });
 
 router.put('/:id', (req, res) => {
-  const context = readContext();
-  const idx = context.journal.entries.findIndex((e) => e.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'journal entry not found' });
+  let updated = null;
+  updateContext((context) => {
+    const idx = context.journal.entries.findIndex((e) => e.id === req.params.id);
+    if (idx === -1) return;
 
-  const updatable = ['ticker', 'action', 'shares', 'price', 'stopPrice', 'targetPrice', 'thesis', 'conviction'];
-  const body = req.body || {};
-  for (const key of updatable) {
-    if (body[key] !== undefined) {
-      context.journal.entries[idx][key] =
-        ['shares', 'price', 'stopPrice', 'targetPrice', 'conviction'].includes(key) && body[key] !== null
-          ? Number(body[key])
-          : key === 'ticker'
-          ? String(body[key]).toUpperCase()
-          : body[key];
+    const updatable = ['ticker', 'action', 'shares', 'price', 'stopPrice', 'targetPrice', 'thesis', 'conviction'];
+    const body = req.body || {};
+    for (const key of updatable) {
+      if (body[key] !== undefined) {
+        context.journal.entries[idx][key] =
+          ['shares', 'price', 'stopPrice', 'targetPrice', 'conviction'].includes(key) && body[key] !== null
+            ? Number(body[key])
+            : key === 'ticker'
+            ? String(body[key]).toUpperCase()
+            : body[key];
+      }
     }
-  }
-  writeContext(context);
-  res.json(context.journal.entries[idx]);
+    updated = context.journal.entries[idx];
+  });
+  if (!updated) return res.status(404).json({ error: 'journal entry not found' });
+  res.json(updated);
 });
 
 // Reconcile a decision against what actually happened.
 router.post('/:id/outcome', (req, res) => {
-  const context = readContext();
-  const idx = context.journal.entries.findIndex((e) => e.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'journal entry not found' });
-
-  context.journal.entries[idx] = journal.closeEntry(context.journal.entries[idx], req.body || {});
-  writeContext(context);
-  res.json(context.journal.entries[idx]);
+  let closed = null;
+  updateContext((context) => {
+    const idx = context.journal.entries.findIndex((e) => e.id === req.params.id);
+    if (idx === -1) return;
+    context.journal.entries[idx] = journal.closeEntry(context.journal.entries[idx], req.body || {});
+    closed = context.journal.entries[idx];
+  });
+  if (!closed) return res.status(404).json({ error: 'journal entry not found' });
+  res.json(closed);
 });
 
 router.delete('/:id', (req, res) => {
-  const context = readContext();
-  const before = context.journal.entries.length;
-  context.journal.entries = context.journal.entries.filter((e) => e.id !== req.params.id);
-  if (context.journal.entries.length === before) {
-    return res.status(404).json({ error: 'journal entry not found' });
-  }
-  writeContext(context);
+  let found = false;
+  updateContext((context) => {
+    const before = context.journal.entries.length;
+    context.journal.entries = context.journal.entries.filter((e) => e.id !== req.params.id);
+    found = context.journal.entries.length !== before;
+  });
+  if (!found) return res.status(404).json({ error: 'journal entry not found' });
   res.status(204).end();
 });
 
@@ -112,10 +118,13 @@ ${JSON.stringify(
 
 Grade this honestly and specifically. Where is the Council well calibrated, and where is it fooling itself? Does high conviction actually predict better outcomes here, or not? Does a split Council predict worse ones? Call out any pattern in how Yinon's theses fail. Be blunt — vague encouragement is worthless. Under 250 words, no preamble.`;
 
-    const reflection = await council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
-      json: false,
-      maxOutputTokens: 2048,
-    });
+    const reflection = await costTracker.metered('journal reflection', context.settings, (onUsage) =>
+      council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
+        json: false,
+        maxOutputTokens: 2048,
+        onUsage,
+      })
+    );
 
     res.json({ reflection, scorecard: stats });
   } catch (err) {

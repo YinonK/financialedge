@@ -45,10 +45,15 @@ function isConfigured() {
   return Boolean(url && key);
 }
 
+// A hung socket here would block the entire serialised write queue forever —
+// Node's fetch has no default timeout, so give it one.
+const REQUEST_TIMEOUT_MS = 20000;
+
 async function rest(path, options = {}) {
   const { url, key } = config();
   const res = await fetch(`${url}/rest/v1/${path}`, {
     ...options,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     headers: {
       apikey: key,
       Authorization: `Bearer ${key}`,
@@ -105,7 +110,26 @@ async function write(context, previous) {
   // of them rather than only inserting new ones.
   const journalRows = (context.journal.entries || []).map(journalToRow);
 
+  // Deletions must reach the tables too, or a deleted signal/journal entry
+  // resurrects from Postgres on the next restart. Signals and journal are
+  // never cap-trimmed in memory, so an id present before and absent now is a
+  // real user delete. Analyses are EXCLUDED on purpose: memory keeps only the
+  // newest 400 as a working set while the table keeps the full record, so a
+  // shift() there is a trim, not a delete.
+  const currentSignalIds = new Set((context.signals.items || []).map((s) => s.id));
+  const currentJournalIds = new Set((context.journal.entries || []).map((j) => j.id));
+  const deletedSignalIds = [...prevSignalIds].filter((id) => !currentSignalIds.has(id));
+  const deletedJournalIds = [...prevJournalIds].filter((id) => !currentJournalIds.has(id));
+
   const jobs = [];
+
+  const inFilter = (ids) => `in.${encodeURIComponent(`(${ids.map((id) => `"${id}"`).join(',')})`)}`;
+  if (deletedSignalIds.length) {
+    jobs.push(rest(`${TABLE_SIGNALS}?id=${inFilter(deletedSignalIds)}`, { method: 'DELETE' }));
+  }
+  if (deletedJournalIds.length) {
+    jobs.push(rest(`${TABLE_JOURNAL}?id=${inFilter(deletedJournalIds)}`, { method: 'DELETE' }));
+  }
 
   if (newSignals.length) {
     jobs.push(

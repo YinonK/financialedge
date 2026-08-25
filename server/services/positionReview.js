@@ -16,6 +16,7 @@
  * READ-ONLY. Produces a recommendation. Never sells anything.
  */
 
+const crypto = require('crypto');
 const { getQuote, getTechnicals } = require('./yahooFinance');
 const { getValuation } = require('./valuation');
 const { getFlowSentiment } = require('./flowSentiment');
@@ -23,6 +24,8 @@ const { getIndicators } = require('./marketIndicators');
 const { computeZone } = require('./riskPortfolio');
 const council = require('./council');
 const { buildProvenanceBlock } = require('./provenance');
+const { recordAnalysis } = require('./analysisStore');
+const { updateContext } = require('../lib/store');
 
 // The thesis-status fields the standard CFO verdict doesn't carry.
 const REVIEW_CHAIR_FIELDS = `  "thesisStatus": "INTACT"|"WEAKENING"|"BROKEN",
@@ -202,10 +205,13 @@ Every seat: argue your mandate against THIS position as it stands today. The Ris
 
 Data marked unavailable has NO feed — reason around the gap, never invent numbers.`;
 
+  const depth = council.depthForPath(context.settings, 'positionReview');
   const result = await council.conveneWithMemory(situation, context, position.ticker, {
     extraChairFields: REVIEW_CHAIR_FIELDS,
     settings: context.settings,
     costLabel: `position review (${position.ticker})`,
+    roleIds: depth.roleIds,
+    catfish: depth.catfish,
   });
 
   return {
@@ -260,4 +266,71 @@ function positionsDueForReview(context, nowMs = Date.now()) {
   return { cadenceDays, due };
 }
 
-module.exports = { reviewPosition, positionsDueForReview, findEntryDecision, REVIEW_CHAIR_FIELDS };
+const MAX_REVIEW_HISTORY = 200;
+
+/**
+ * Persists a finished review in ONE place, for every trigger path: the
+ * unified analysis store (so it feeds reflection and is permalinkable) plus
+ * the positionReviews bookkeeping — all applied to the LIVE context in a
+ * single mutation. Previously the watchdog and positions routes each did
+ * their own version of this; the watchdog's skipped the analysis store
+ * entirely, and both wrote back stale snapshots that erased concurrent state
+ * (which is how event reviews re-fired every tick).
+ *
+ * opts.signalIds  — signal ids that triggered an event review (marked seen)
+ * opts.levelName  — structural level that triggered it (cooldown bookkeeping)
+ */
+function persistReview(review, opts = {}) {
+  const rec = recordAnalysis({
+    ticker: review.ticker,
+    kind: 'position_review',
+    trigger: review.trigger,
+    verdict: review.verdict,
+    seats: review.seats,
+    catfish: review.catfish,
+    revisedAfterCatfish: review.revisedAfterCatfish,
+    missingSeats: review.missingSeats,
+    providersUsed: review.providersUsed,
+    errors: review.errors,
+    cost: review.cost,
+    extraContext: { positionId: review.positionId, snapshot: review.snapshot, eventReason: review.eventReason },
+  });
+  review.analysisId = rec ? rec.id : null;
+
+  updateContext((context) => {
+    context.positionReviews.history.push({
+      id: crypto.randomUUID(),
+      analysisId: review.analysisId,
+      positionId: review.positionId,
+      ticker: review.ticker,
+      trigger: review.trigger,
+      eventReason: review.eventReason,
+      reviewedAt: review.reviewedAt,
+      snapshot: review.snapshot,
+      verdict: review.verdict,
+      seats: review.seats,
+      catfish: review.catfish,
+      revisedAfterCatfish: review.revisedAfterCatfish,
+      missingSeats: review.missingSeats,
+      providersUsed: review.providersUsed,
+      errors: review.errors,
+    });
+    if (context.positionReviews.history.length > MAX_REVIEW_HISTORY) context.positionReviews.history.shift();
+    context.positionReviews.lastReviewedAt[review.positionId] = review.reviewedAt;
+
+    if (opts.signalIds && opts.signalIds.length) {
+      const prev = context.positionReviews.seenSignalIds[review.positionId] || [];
+      context.positionReviews.seenSignalIds[review.positionId] = [...prev, ...opts.signalIds].slice(-200);
+    }
+    if (opts.levelName) {
+      if (!context.positionReviews.seenLevelBreaks) context.positionReviews.seenLevelBreaks = {};
+      const lv = context.positionReviews.seenLevelBreaks[review.positionId] || {};
+      lv[opts.levelName] = review.reviewedAt;
+      context.positionReviews.seenLevelBreaks[review.positionId] = lv;
+    }
+  });
+
+  return review;
+}
+
+module.exports = { reviewPosition, positionsDueForReview, findEntryDecision, persistReview, REVIEW_CHAIR_FIELDS };

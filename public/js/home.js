@@ -159,7 +159,6 @@ function escapeHtml(str) {
 }
 
 (async function init() {
-  await syncContextFromServer();
   loadBriefing();
   loadPortfolioSnapshot();
   loadIndicators();

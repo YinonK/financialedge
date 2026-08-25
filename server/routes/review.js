@@ -2,12 +2,13 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
-const { requireCronKey } = require('../lib/cronAuth');
+const { readContext, updateContext } = require('../lib/store');
+const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
 const { getQuote } = require('../services/yahooFinance');
 const { getUsdIls } = require('../services/fx');
 const journalService = require('../services/journal');
 const council = require('../services/council');
+const costTracker = require('../services/costTracker');
 const { SYSTEM_PERSONA } = require('../services/brain');
 const { sendMessage } = require('../services/telegram');
 
@@ -109,10 +110,13 @@ Most-mentioned tickers across his channels this week: ${JSON.stringify(topSignal
 Cover: what actually happened, what the track record says about calibration (especially whether conviction and Council agreement are predicting anything), what he should be watching into next week, and one thing worth doing differently. Under 300 words. No disclaimers, no filler.`;
 
       try {
-        reflection = await council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
-          json: false,
-          maxOutputTokens: 2048,
-        });
+        reflection = await costTracker.metered('weekly review', context.settings, (onUsage) =>
+          council.chairGenerate(SYSTEM_PERSONA, [{ role: 'user', content: prompt }], {
+            json: false,
+            maxOutputTokens: 2048,
+            onUsage,
+          })
+        );
       } catch (err) {
         reflection = `(Brain reflection unavailable: ${err.message.slice(0, 200)} — check Home → Brain Operations.)`;
       }
@@ -153,12 +157,14 @@ Most-mentioned in your channels: ${topSignals.map(([t, n]) => `${t} (${n})`).joi
       closedCount: closedThisWeek.length,
       delivery,
     };
-    context.review.history.push(entry);
-    if (context.review.history.length > 60) context.review.history.shift();
-    writeContext(context);
+    updateContext((ctx) => {
+      ctx.review.history.push(entry);
+      if (ctx.review.history.length > 60) ctx.review.history.shift();
+    });
 
     res.json(entry);
   } catch (err) {
+    await reportCronFailure('weekly review', err);
     res.status(500).json({ error: err.message });
   }
 });

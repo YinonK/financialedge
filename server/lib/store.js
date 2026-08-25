@@ -13,6 +13,10 @@ const DEFAULT_CONTEXT = {
   },
   signals: {
     items: [], // { id, pastedAt, rawText, tickers: [], source }
+    // Convergence alerts already sent, so a name the channels discuss daily
+    // doesn't re-trigger a paid Council run on every 15-minute ingest.
+    // { [ticker]: { count, strong, lastAlertAt } }
+    alertedConvergences: {},
   },
   brain: {
     messages: [], // { id, role, content, ts }
@@ -68,6 +72,9 @@ const DEFAULT_CONTEXT = {
     history: [], // { positionId, ticker, trigger, verdict, thesisStatus, ... }
     lastReviewedAt: {}, // { [positionId]: ISO } — lets one daily cron serve any cadence
     seenSignalIds: {}, // { [positionId]: [signalId] } — so an event fires once, not every tick
+    // A price hovering at its 200 DMA is one event, not one per watchdog tick.
+    // { [positionId]: { [levelName]: ISO of last review triggered by it } }
+    seenLevelBreaks: {},
   },
   analyses: {
     // Every Council run, whatever triggered it — research, convergence,
@@ -129,7 +136,33 @@ function readContext() {
 }
 
 function writeContext(context) {
+  capUnbounded(context);
   return storage.write(context);
+}
+
+/**
+ * The safe way to change state: do slow work FIRST, then apply only your own
+ * changes to the live context inside `fn`. Holding a readContext() snapshot
+ * across an `await` and writing it back erases everything written in between —
+ * that bug bit the watchdog, position reviews, and the opportunity hunt.
+ */
+function updateContext(fn) {
+  return storage.mutate((context) => {
+    const result = fn(context);
+    const out = result === undefined ? context : result;
+    capUnbounded(out);
+    return out;
+  }, DEFAULT_CONTEXT);
+}
+
+// brain.messages was the one collection with no cap — every chat grew the
+// app_state blob forever. The LLM only ever reads the last 20 anyway.
+const MAX_BRAIN_MESSAGES = 500;
+function capUnbounded(context) {
+  const msgs = context.brain && context.brain.messages;
+  if (Array.isArray(msgs) && msgs.length > MAX_BRAIN_MESSAGES) {
+    context.brain.messages = msgs.slice(-MAX_BRAIN_MESSAGES);
+  }
 }
 
 /** Await pending durable writes — used by cron routes and on shutdown. */
@@ -141,4 +174,4 @@ function storageStatus() {
   return storage.status();
 }
 
-module.exports = { readContext, writeContext, initStore, flushStore, storageStatus, DATA_FILE, DEFAULT_CONTEXT };
+module.exports = { readContext, writeContext, updateContext, initStore, flushStore, storageStatus, DATA_FILE, DEFAULT_CONTEXT };

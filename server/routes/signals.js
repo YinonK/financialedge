@@ -2,12 +2,12 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { readContext, writeContext } = require('../lib/store');
-const { detectTickers } = require('../lib/tickerDetect');
+const { readContext, updateContext } = require('../lib/store');
+const { detectCashtags } = require('../lib/tickerDetect');
 const { extractFromMessages } = require('../services/entityExtract');
 const { ingestNewSignals } = require('../services/telegramIngest');
 const { sendMessage } = require('../services/telegram');
-const { requireCronKey } = require('../lib/cronAuth');
+const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
 const council = require('../services/council');
 const { recordAnalysis } = require('../services/analysisStore');
 const { buildProvenanceBlock } = require('../services/provenance');
@@ -17,6 +17,10 @@ const router = express.Router();
 const CONVERGENCE_WINDOW_DAYS = 14;
 const CONVERGENCE_MIN_COUNT = 2;
 const STRONG_CONVERGENCE_MIN_COUNT = 3;
+// How long before an already-alerted convergence may alert again with no
+// change in strength. A name the channels discuss daily used to re-trigger a
+// full (paid) Council run on every 15-minute ingest.
+const CONVERGENCE_REALERT_DAYS = 7;
 
 function computeConvergence(items) {
   const cutoff = Date.now() - CONVERGENCE_WINDOW_DAYS * 24 * 60 * 60 * 1000;
@@ -42,6 +46,23 @@ function computeConvergence(items) {
     .sort((a, b) => b.count - a.count);
 }
 
+/**
+ * Which convergences deserve a NEW alert right now. The Council convenes for
+ * a convergence that is new, that just turned strong, or that resurfaced
+ * after the cooldown — not for every additional mention of a name it has
+ * already argued about this week.
+ */
+function convergencesWorthAlerting(convergences, alerted) {
+  const now = Date.now();
+  const cooldownMs = CONVERGENCE_REALERT_DAYS * 24 * 60 * 60 * 1000;
+  return convergences.filter((c) => {
+    const prev = alerted[c.ticker];
+    if (!prev) return true;
+    if (c.strongConvergence && !prev.strong) return true; // escalated to strong
+    return now - new Date(prev.lastAlertAt).getTime() >= cooldownMs;
+  });
+}
+
 router.get('/', (req, res) => {
   const context = readContext();
   const items = [...context.signals.items].sort((a, b) => new Date(b.pastedAt) - new Date(a.pastedAt));
@@ -57,14 +78,15 @@ router.post('/', async (req, res) => {
 
   // Full extraction, so a pasted Hebrew article is understood the same way an
   // ingested Hebrew channel post is.
-  let enrichment = { tickers: detectTickers(body.rawText), entities: [], extractionMethod: 'regex' };
+  let enrichment = { tickers: detectCashtags(body.rawText), entities: [], extractionMethod: 'regex' };
+  let newMappings = {};
   try {
     const out = await extractFromMessages(
       [{ rawText: body.rawText.trim(), source: body.source || 'manual paste' }],
-      { knownMappings: context.entityCache.mappings }
+      { knownMappings: context.entityCache.mappings, settings: context.settings }
     );
     if (out.enrichments[0]) enrichment = out.enrichments[0];
-    Object.assign(context.entityCache.mappings, out.newMappings);
+    newMappings = out.newMappings;
   } catch (err) {
     console.error('[signals] extraction failed, falling back to regex:', err.message);
   }
@@ -77,19 +99,23 @@ router.post('/', async (req, res) => {
     source: body.source || 'manual paste',
     parsed: enrichment,
   };
-  context.signals.items.push(item);
-  writeContext(context);
+  // Applied to the LIVE context — the extraction await above means our
+  // snapshot may be stale by now.
+  updateContext((ctx) => {
+    Object.assign(ctx.entityCache.mappings, newMappings);
+    ctx.signals.items.push(item);
+  });
   res.status(201).json(item);
 });
 
 router.delete('/:id', (req, res) => {
-  const context = readContext();
-  const before = context.signals.items.length;
-  context.signals.items = context.signals.items.filter((s) => s.id !== req.params.id);
-  if (context.signals.items.length === before) {
-    return res.status(404).json({ error: 'signal not found' });
-  }
-  writeContext(context);
+  let found = false;
+  updateContext((context) => {
+    const before = context.signals.items.length;
+    context.signals.items = context.signals.items.filter((s) => s.id !== req.params.id);
+    found = context.signals.items.length !== before;
+  });
+  if (!found) return res.status(404).json({ error: 'signal not found' });
   res.status(204).end();
 });
 
@@ -127,37 +153,51 @@ router.post('/ingest', async (req, res) => {
       try {
         extraction = await extractFromMessages(result.newItems, {
           knownMappings: context.entityCache.mappings,
+          settings: context.settings,
         });
-        Object.assign(context.entityCache.mappings, extraction.newMappings);
       } catch (err) {
         console.error('[signals:ingest] extraction failed, keeping regex tickers:', err.message);
       }
 
-      const unmappedNames = new Set(context.entityCache.unmapped || []);
       result.newItems.forEach((item, i) => {
         const e = extraction.enrichments[i];
         if (!e) return;
         if (e.tickers && e.tickers.length) item.tickers = e.tickers;
         item.parsed = e;
-        for (const name of e.unmappedCompanies || []) unmappedNames.add(name);
       });
-      context.entityCache.unmapped = [...unmappedNames].slice(-200);
 
-      context.signals.items.push(...result.newItems);
-      context.telegramIngest.lastMessageId = result.updatedCheckpoints;
-      writeContext(context);
+      // All state changes from this ingest, applied atomically to the live
+      // context (the MTProto fetch + extraction above took real time).
+      let allItems = [];
+      updateContext((ctx) => {
+        Object.assign(ctx.entityCache.mappings, extraction.newMappings);
+        const unmappedNames = new Set(ctx.entityCache.unmapped || []);
+        for (const item of result.newItems) {
+          for (const name of (item.parsed && item.parsed.unmappedCompanies) || []) unmappedNames.add(name);
+        }
+        ctx.entityCache.unmapped = [...unmappedNames].slice(-200);
+        // Ids are stable (tg-<channel>-<msgId>), so a checkpoint hiccup can
+        // never duplicate a signal in memory.
+        const existingIds = new Set(ctx.signals.items.map((s) => s.id));
+        ctx.signals.items.push(...result.newItems.filter((i) => !existingIds.has(i.id)));
+        ctx.telegramIngest.lastMessageId = result.updatedCheckpoints;
+        allItems = ctx.signals.items;
+      });
 
-      // If any freshly-ingested ticker just crossed the convergence
-      // threshold, that's worth a proactive nudge rather than waiting for
-      // Yinon to open the Signals screen.
+      // Convergence check on freshly-ingested tickers — but only the ones
+      // worth a NEW alert (see convergencesWorthAlerting).
       const freshTickers = new Set(result.newItems.flatMap((i) => i.tickers));
-      const convergences = computeConvergence(context.signals.items).filter((c) => freshTickers.has(c.ticker));
+      const alerted = readContext().signals.alertedConvergences || {};
+      const convergences = convergencesWorthAlerting(
+        computeConvergence(allItems).filter((c) => freshTickers.has(c.ticker)),
+        alerted
+      );
+
       if (convergences.length) {
         // A new convergence is exactly the moment worth arguing about, so the
-        // full Council brainstorms it (independent takes → rebuttals →
-        // consensus) rather than giving a one-shot opinion. Never blocks the
-        // alert: if the Council is down, the alert still goes out and says so.
-        const relatedSignals = context.signals.items
+        // full Council debates it. Never blocks the alert: if the Council is
+        // down, the alert still goes out and says so.
+        const relatedSignals = allItems
           .filter((s) => s.tickers.some((t) => convergences.some((c) => c.ticker === t)))
           .slice(-12);
 
@@ -184,14 +224,30 @@ ${JSON.stringify(relatedSignals, null, 2)}
 
 Is this convergence worth Yinon's attention, or is it noise? Repetition is not evidence — several posts from one channel is one opinion repeated. Say plainly if that is what this is.`;
 
+          const settingsNow = readContext().settings;
+          const depth = council.depthForPath(settingsNow, 'convergence');
           councilResult = await council.convene(situation, {
-            settings: context.settings,
+            settings: settingsNow,
             costLabel: 'signal convergence',
+            roleIds: depth.roleIds,
+            catfish: depth.catfish,
           });
         } catch (err) {
           console.error('[signals:ingest] council failed:', err.message);
           councilError = err.message;
         }
+
+        // Remember what we alerted on, so the next ingest doesn't repeat it.
+        updateContext((ctx) => {
+          if (!ctx.signals.alertedConvergences) ctx.signals.alertedConvergences = {};
+          for (const c of convergences) {
+            ctx.signals.alertedConvergences[c.ticker] = {
+              count: c.count,
+              strong: c.strongConvergence,
+              lastAlertAt: new Date().toISOString(),
+            };
+          }
+        });
 
         let analysisId = null;
         if (councilResult && councilResult.seats && councilResult.seats.length) {
@@ -245,6 +301,7 @@ Is this convergence worth Yinon's attention, or is it noise? Repetition is not e
       errors: result.errors || [],
     });
   } catch (err) {
+    await reportCronFailure('telegram ingest', err);
     res.status(500).json({ error: err.message });
   }
 });

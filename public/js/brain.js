@@ -55,6 +55,5 @@ async function sendChat() {
 }
 
 (async function init() {
-  await syncContextFromServer();
   loadHistory();
 })();
