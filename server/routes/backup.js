@@ -3,6 +3,7 @@
 const express = require('express');
 const { readContext } = require('../lib/store');
 const { requireCronKey } = require('../lib/cronAuth');
+const { runCronJob } = require('../lib/asyncCron');
 const { sendDocument } = require('../services/telegram');
 
 const router = express.Router();
@@ -20,7 +21,9 @@ const router = express.Router();
 router.post('/', async (req, res) => {
   if (!requireCronKey(req, res)) return;
 
-  try {
+  // Fast today, but the upload grows with the archive — don't let it become
+  // another silent timeout as history accumulates.
+  return runCronJob('backup export', req, res, async () => {
     const context = readContext();
     const stamp = new Date().toISOString().slice(0, 10);
     const filename = `financialedge-backup-${stamp}.json`;
@@ -31,7 +34,7 @@ router.post('/', async (req, res) => {
       error: err.message,
     }));
 
-    res.json({
+    return {
       ok: true,
       filename,
       bytes: Buffer.byteLength(body),
@@ -42,10 +45,8 @@ router.post('/', async (req, res) => {
         positions: context.portfolio.positions.length,
       },
       delivery,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    };
+  });
 });
 
 module.exports = router;

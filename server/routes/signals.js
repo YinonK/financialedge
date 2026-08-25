@@ -7,7 +7,8 @@ const { detectCashtags } = require('../lib/tickerDetect');
 const { extractFromMessages } = require('../services/entityExtract');
 const { ingestNewSignals } = require('../services/telegramIngest');
 const { sendMessage } = require('../services/telegram');
-const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
+const { requireCronKey } = require('../lib/cronAuth');
+const { runCronJob } = require('../lib/asyncCron');
 const council = require('../services/council');
 const { recordAnalysis } = require('../services/analysisStore');
 const { buildProvenanceBlock } = require('../services/provenance');
@@ -137,12 +138,14 @@ router.get('/convergence/report', (req, res) => {
 router.post('/ingest', async (req, res) => {
   if (!requireCronKey(req, res)) return;
 
-  try {
+  // Ingestion itself is quick, but a fresh convergence convenes the full
+  // Council — minutes. Acknowledge now; the alert still goes to Telegram.
+  return runCronJob('telegram ingest', req, res, async () => {
     const context = readContext();
     const result = await ingestNewSignals(context.telegramIngest.lastMessageId);
 
     if (!result.configured) {
-      return res.json({ ingested: 0, configured: false, reason: result.reason });
+      return { ingested: 0, configured: false, reason: result.reason };
     }
 
     if (result.newItems.length) {
@@ -294,16 +297,13 @@ Is this convergence worth Yinon's attention, or is it noise? Repetition is not e
       }
     }
 
-    res.json({
+    return {
       ingested: result.newItems.length,
       configured: true,
       perChannel: result.perChannel || {},
       errors: result.errors || [],
-    });
-  } catch (err) {
-    await reportCronFailure('telegram ingest', err);
-    res.status(500).json({ error: err.message });
-  }
+    };
+  });
 });
 
 module.exports = router;

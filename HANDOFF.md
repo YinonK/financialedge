@@ -212,7 +212,7 @@ All POST with header `X-Cron-Key: <CRON_KEY>`, except the ping (GET, no header).
 
 **Why the ping matters:** Render's free tier sleeps after ~15 min idle; cold start is 30–60s, which exceeds cron-job.org's 30s timeout. The 15-min ingest job sits right on that boundary, causing intermittent 503s. A 10-min ping keeps it warm.
 
-**Also note:** a full Council run takes ~2–3 minutes, which **exceeds the 30s cron timeout**. The work still completes server-side and Telegram still fires — cron-job.org just logs a timeout. A red entry there is not necessarily a failure.
+**Long runs no longer look like failures.** A full Council run takes ~2–3 minutes, well past cron-job.org's 30s timeout. This was written off as cosmetic; it was not. Recorded timeouts count toward cron-job.org's auto-disable threshold, which is how the Signal Ingest and Watchdog jobs silently died for five days in Aug 2026. Every cron endpoint now acknowledges with **202 immediately** and finishes the work in the background (`server/lib/asyncCron.js`), reporting the real result over Telegram as always. Cheap "nothing to do" guards (market hours, cadence not due) still answer definitively before the handoff. Add `?wait=true` to any of them to block for the full result when testing by hand. One run per job at a time — a hung provider can't stack up paid Council runs. In-flight runs show in `/api/health` under `runningJobs`.
 
 **Cadence self-check design:** `/api/positions/review-due` asks each position "has it been N days since I was last reviewed?" So changing the cadence in Settings takes effect immediately with **no cron-job.org change needed**. Capped at 2 positions per run (a review is ~8 model calls).
 
@@ -299,7 +299,7 @@ Verified by grepping the actual codebase, not recalled.
 ### Known limitations
 - **Yahoo `quoteSummary` is frequently bot-blocked**, so valuation and flow/sentiment lenses often return `available: false`. Handled honestly (never faked) but it means two of the Five Lenses are regularly dark.
 - **Claude Sonnet 5 pricing is an estimate** ($2/$10 per 1M). Verify against a real Anthropic invoice and correct in Settings → Model prices.
-- **Full Council runs (~2–3 min) exceed cron-job.org's 30s timeout.** Work completes; the cron log shows a timeout.
+- ~~Full Council runs exceed cron-job.org's 30s timeout~~ — **fixed 2026-08-25**: cron endpoints return 202 and finish in the background, so a long run is no longer recorded as a failure (see §6).
 - **In-memory write window** — see §2.
 - **TASE tickers may extract correctly but have no Yahoo price data.**
 - **Provider health shows `untested` after each redeploy** — it's in-memory since last boot, not persisted.

@@ -7,7 +7,8 @@ const { checkPositions, isUsMarketHours, detectMaterialEvents } = require('../se
 const { reviewPosition, persistReview } = require('../services/positionReview');
 const { getIndicators } = require('../services/marketIndicators');
 const { sendMessage } = require('../services/telegram');
-const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
+const { requireCronKey } = require('../lib/cronAuth');
+const { runCronJob } = require('../lib/asyncCron');
 const council = require('../services/council');
 const costTracker = require('../services/costTracker');
 const { SYSTEM_PERSONA } = require('../services/brain');
@@ -25,7 +26,9 @@ router.post('/', async (req, res) => {
     return res.json({ skipped: true, reason: 'outside US market hours (pass ?force=true to override for testing)' });
   }
 
-  try {
+  // A tick that finds a material event runs a full Council review — minutes,
+  // not seconds. Acknowledge now; alerts still arrive by Telegram.
+  return runCronJob('watchdog', req, res, async () => {
     // Snapshot for computing only — every WRITE below goes through
     // updateContext so nothing written meanwhile can be clobbered.
     const context = readContext();
@@ -148,11 +151,8 @@ router.post('/', async (req, res) => {
       if (ctx.watchdog.history.length > 200) ctx.watchdog.history.shift();
     });
 
-    res.json(entry);
-  } catch (err) {
-    await reportCronFailure('watchdog', err);
-    res.status(500).json({ error: err.message });
-  }
+    return entry;
+  });
 });
 
 router.get('/history', (req, res) => {

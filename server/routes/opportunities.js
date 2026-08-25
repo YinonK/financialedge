@@ -3,7 +3,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const { readContext, updateContext } = require('../lib/store');
-const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
+const { requireCronKey } = require('../lib/cronAuth');
+const { runCronJob } = require('../lib/asyncCron');
 const { huntCandidates } = require('../services/opportunityHunt');
 const council = require('../services/council');
 const { sendMessage } = require('../services/telegram');
@@ -35,22 +36,25 @@ function appBaseUrl() {
 router.post('/', async (req, res) => {
   if (!requireCronKey(req, res)) return;
 
-  try {
-    const context = readContext();
+  // Cheap guards run BEFORE the async handoff, so the common "nothing to do"
+  // case still gets a definitive answer in the response.
+  const context = readContext();
 
-    // opportunityHuntCadenceDays was stored and editable but read by nothing.
-    // Same self-check pattern as position reviews: the cron fires daily, the
-    // route decides whether a hunt is actually due. 0 disables the hunt.
-    const cadenceDays =
-      context.settings.opportunityHuntCadenceDays != null ? Number(context.settings.opportunityHuntCadenceDays) : 1;
-    if (!cadenceDays || cadenceDays <= 0) {
-      return res.json({ skipped: true, reason: 'opportunity hunt is disabled (cadence set to 0)' });
-    }
-    const lastHunt = (context.opportunities.history || []).slice(-1)[0];
-    if (lastHunt && Date.now() - new Date(lastHunt.ts).getTime() < cadenceDays * 24 * 60 * 60 * 1000) {
-      return res.json({ skipped: true, reason: `not due yet (cadence: every ${cadenceDays} day(s))` });
-    }
+  // opportunityHuntCadenceDays was stored and editable but read by nothing.
+  // Same self-check pattern as position reviews: the cron fires daily, the
+  // route decides whether a hunt is actually due. 0 disables the hunt.
+  const cadenceDays =
+    context.settings.opportunityHuntCadenceDays != null ? Number(context.settings.opportunityHuntCadenceDays) : 1;
+  if (!cadenceDays || cadenceDays <= 0) {
+    return res.json({ skipped: true, reason: 'opportunity hunt is disabled (cadence set to 0)' });
+  }
+  const lastHunt = (context.opportunities.history || []).slice(-1)[0];
+  if (lastHunt && Date.now() - new Date(lastHunt.ts).getTime() < cadenceDays * 24 * 60 * 60 * 1000) {
+    return res.json({ skipped: true, reason: `not due yet (cadence: every ${cadenceDays} day(s))` });
+  }
 
+  // A full Council hunt runs for minutes — acknowledge now, report by Telegram.
+  return runCronJob('opportunity hunt', req, res, async () => {
     const hunt = await huntCandidates(context);
 
     if (!hunt.candidates.length) {
@@ -66,7 +70,7 @@ router.post('/', async (req, res) => {
         ctx.opportunities.history.push(entry);
         if (ctx.opportunities.history.length > 90) ctx.opportunities.history.shift();
       });
-      return res.json(entry);
+      return entry;
     }
 
     // Full 8-seat Council — the same depth Research and Position Reviews get.
@@ -197,11 +201,8 @@ ${v.verdict ? `Council verdict: ${v.verdict}${v.conviction != null ? ` (convicti
 
     await notifyBudgetIfNeeded();
 
-    res.json(entry);
-  } catch (err) {
-    await reportCronFailure('opportunity hunt', err);
-    res.status(500).json({ error: err.message });
-  }
+    return entry;
+  });
 });
 
 router.get('/history', (req, res) => {

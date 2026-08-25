@@ -10,7 +10,8 @@ const council = require('../services/council');
 const costTracker = require('../services/costTracker');
 const { sendBriefing } = require('../services/telegram');
 const { SYSTEM_PERSONA } = require('../services/brain');
-const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
+const { requireCronKey } = require('../lib/cronAuth');
+const { runCronJob } = require('../lib/asyncCron');
 
 const router = express.Router();
 
@@ -20,7 +21,10 @@ const router = express.Router();
 router.post('/', async (req, res) => {
   if (!requireCronKey(req, res)) return;
 
-  try {
+  // One model call plus several data feeds — usually under 30s, but a
+  // reasoning model on a cold instance can exceed it, and a timeout counts
+  // toward cron-job.org's auto-disable. Acknowledge now.
+  return runCronJob('morning briefing', req, res, async () => {
     const context = readContext();
     const [indicators, fx, positionsQuotes] = await Promise.all([
       getIndicators(context.indicators.thresholds),
@@ -80,11 +84,8 @@ USD/ILS: ${fx.rate || 'unavailable'}`;
       if (ctx.briefing.history.length > 90) ctx.briefing.history.shift();
     });
 
-    res.json(entry);
-  } catch (err) {
-    await reportCronFailure('morning briefing', err);
-    res.status(500).json({ error: err.message });
-  }
+    return entry;
+  });
 });
 
 router.get('/history', (req, res) => {

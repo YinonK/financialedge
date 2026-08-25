@@ -2,7 +2,8 @@
 
 const express = require('express');
 const { readContext } = require('../lib/store');
-const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
+const { requireCronKey } = require('../lib/cronAuth');
+const { runCronJob } = require('../lib/asyncCron');
 const { reviewPosition, positionsDueForReview, persistReview } = require('../services/positionReview');
 const { sendMessage } = require('../services/telegram');
 const costTracker = require('../services/costTracker');
@@ -79,17 +80,19 @@ router.post('/:id/review', async (req, res) => {
 router.post('/review-due', async (req, res) => {
   if (!requireCronKey(req, res)) return;
 
-  try {
-    const context = readContext();
-    const { cadenceDays, due } = positionsDueForReview(context);
+  // Cheap guards first, so "nothing due" still answers definitively.
+  const context = readContext();
+  const { cadenceDays, due } = positionsDueForReview(context);
 
-    if (!cadenceDays || cadenceDays <= 0) {
-      return res.json({ skipped: true, reason: 'scheduled position reviews are disabled (cadence set to 0)' });
-    }
-    if (!due.length) {
-      return res.json({ reviewed: 0, cadenceDays, note: 'nothing due yet' });
-    }
+  if (!cadenceDays || cadenceDays <= 0) {
+    return res.json({ skipped: true, reason: 'scheduled position reviews are disabled (cadence set to 0)' });
+  }
+  if (!due.length) {
+    return res.json({ reviewed: 0, cadenceDays, note: 'nothing due yet' });
+  }
 
+  // Up to 2 full Council reviews — several minutes. Acknowledge now.
+  return runCronJob('position review sweep', req, res, async () => {
     const batch = due.slice(0, MAX_SCHEDULED_PER_RUN);
     const results = [];
 
@@ -118,16 +121,13 @@ router.post('/review-due', async (req, res) => {
       console.error('[budget] warning check failed:', err.message);
     }
 
-    res.json({
+    return {
       reviewed: results.length,
       cadenceDays,
       stillDue: Math.max(0, due.length - batch.length),
       results,
-    });
-  } catch (err) {
-    await reportCronFailure('position review sweep', err);
-    res.status(500).json({ error: err.message });
-  }
+    };
+  });
 });
 
 router.get('/reviews', (req, res) => {

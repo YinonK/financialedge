@@ -21,6 +21,7 @@ const reviewRoutes = require('./routes/review');
 const telegramWebhookRoutes = require('./routes/telegramWebhook');
 const backupRoutes = require('./routes/backup');
 const { initStore, flushStore, storageStatus } = require('./lib/store');
+const { runningJobs } = require('./lib/asyncCron');
 const council = require('./services/council');
 const telegram = require('./services/telegram');
 const telegramIngest = require('./services/telegramIngest');
@@ -85,6 +86,9 @@ app.get('/api/health', (req, res) => {
     telegramIngestConfigured: telegramIngest.isConfigured(),
     telegramIngestChannels: telegramIngest.getConfiguredChannels(),
     storage: storageStatus(),
+    // Cron work happens in the background now, so a run that never finishes
+    // would otherwise be invisible.
+    runningJobs: runningJobs(),
     time: new Date().toISOString(),
   });
 });

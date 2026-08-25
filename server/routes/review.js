@@ -3,7 +3,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const { readContext, updateContext } = require('../lib/store');
-const { requireCronKey, reportCronFailure } = require('../lib/cronAuth');
+const { requireCronKey } = require('../lib/cronAuth');
+const { runCronJob } = require('../lib/asyncCron');
 const { getQuote } = require('../services/yahooFinance');
 const { getUsdIls } = require('../services/fx');
 const journalService = require('../services/journal');
@@ -21,7 +22,9 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 router.post('/weekly', async (req, res) => {
   if (!requireCronKey(req, res)) return;
 
-  try {
+  // Quotes for the whole book plus a model call — can outrun a 30s scheduler
+  // timeout, and a timeout counts toward auto-disable. Acknowledge now.
+  return runCronJob('weekly review', req, res, async () => {
     const context = readContext();
     const since = Date.now() - WEEK_MS;
     const weekOf = new Date().toISOString().slice(0, 10);
@@ -162,11 +165,8 @@ Most-mentioned in your channels: ${topSignals.map(([t, n]) => `${t} (${n})`).joi
       if (ctx.review.history.length > 60) ctx.review.history.shift();
     });
 
-    res.json(entry);
-  } catch (err) {
-    await reportCronFailure('weekly review', err);
-    res.status(500).json({ error: err.message });
-  }
+    return entry;
+  });
 });
 
 router.get('/history', (req, res) => {
