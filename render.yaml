@@ -31,10 +31,18 @@ services:
         sync: false
       - key: CRON_KEY
         sync: false
+      - key: APP_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
       - key: PORT
         value: 3000
-# NOTE: Render's free tier does not support persistent disks. data/context.json
-# will reset on every redeploy/restart on the free plan — the browser's
-# localStorage is the durable copy and re-syncs to the server on load.
-# Upgrade to a paid plan + add a `disk:` block here if you want server-side
-# persistence to survive restarts.
+# NOTE: Render's free tier has no persistent disk, so data/context.json resets
+# on every redeploy. That is why durable state lives in Supabase (set
+# SUPABASE_URL + SUPABASE_SERVICE_KEY); the local file is only a dev backend
+# and a fallback if a Supabase write fails.
+#
+# APP_KEY locks every user-facing API route. Leave it unset and anyone with the
+# URL can read the portfolio, spend your model credits, and delete data.
